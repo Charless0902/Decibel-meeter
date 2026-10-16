@@ -738,7 +738,7 @@ async function setupBattle(page, teams, teamCount) {
 const tableRows = (page, sel) =>
   page.$$eval(sel + ' tbody tr', (rows) => rows.map((r) => Array.from(r.cells).map((c) => c.textContent.trim())));
 
-test('team battle on one phone: same word up the ladder, over = restart with a new word, closest wins', { skip }, async () => {
+test('team battle on one phone: best of three, 3 strikes lose a game, same word for both teams, starts alternate', { skip }, async () => {
   const { page, context, errors } = await openApp();
   await setupBattle(page, [{ name: 'Reds', players: ['Ann', 'Bob', 'Cat'] }, { name: 'Blues', players: ['Dan', 'Eve', 'Fay'] }], 2);
   assert.equal(await page.isVisible('#soloPlayersCard'), false);
@@ -747,95 +747,148 @@ test('team battle on one phone: same word up the ladder, over = restart with a n
   assert.equal(await text(page, '#startGame'), 'Start team battle ⚔️');
   await page.click('#startGame');
   await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passMatch'), 'Game 1 of 3 · Reds 0 – 0 Blues');
   assert.equal(await text(page, '#passTeam'), 'Reds · step 1 of 3');
   assert.equal(await text(page, '#passName'), 'Ann');
   assert.equal(await text(page, '#passLevel'), '50');
   assert.equal(await text(page, '#passWord'), '🆕 New word coming up!');
+  assert.equal(await text(page, '#passStrikes'), 'Strikes⬜⬜⬜');
   assert.equal(await text(page, '#gameRound'), 'Reds');
-  assert.equal(await text(page, '#gameMode'), 'Try 1');
+  assert.equal(await text(page, '#gameMode'), '❌ 0/3');
 
-  // Ann: 2 dB under the 50 limit -> saved
-  let turn = await playBattleTurn(page, (limit) => limit - 2);
+  /* ---- game 1: Reds start ---- */
+  let turn = await playBattleTurn(page, (limit) => limit - 2); // Ann, 2 under 50
   assert.equal(turn.limit, 50);
-  const firstWord = turn.word;
+  const word1 = turn.word;
   assert.equal(turn.verdict, 'Great!');
   assert.match(await text(page, '#resultLevel'), /Saved: 48\.\d for Reds at the 50 dB limit/);
   assert.equal(await text(page, '#nextBtn'), 'Next: Bob →');
 
-  // Bob: same word, goes over the 85 limit -> Reds start again with a new word
   await page.click('#nextBtn');
-  assert.equal(await text(page, '#passWord'), '🔁 Same word: ' + firstWord);
-  turn = await playBattleTurn(page, (limit) => limit + 2);
-  assert.equal(turn.limit, 85);
-  assert.equal(turn.word, firstWord);
+  assert.equal(await text(page, '#passWord'), '🔁 The word: ' + word1);
+  turn = await playBattleTurn(page, (limit) => limit + 2); // Bob goes over 85: strike 1
+  assert.equal(turn.word, word1);
   assert.equal(turn.verdict, 'Too loud!');
-  assert.match(await text(page, '#resultLevel'), /Reds starts again at step 1 with a new word/);
+  assert.equal(await text(page, '#resultLevel'), 'Strike 1 of 3! Reds goes back to step 1, same word.');
   assert.equal(await text(page, '#nextBtn'), 'Start again: Ann →');
   assert.equal(await page.evaluate(() => window.__mic.vibrations.length), 1);
   assert.deepEqual((await tableRows(page, '#resultBattle')).map((r) => r[1]), ['👉', '—', '—'], 'the try was wiped');
 
-  // Ann again: new word, 1 dB under
   await page.click('#nextBtn');
-  assert.equal(await text(page, '#gameMode'), 'Try 2');
-  turn = await playBattleTurn(page, (limit) => limit - 1);
-  const secondWord = turn.word;
-  assert.notEqual(secondWord, firstWord);
+  assert.equal(await text(page, '#gameMode'), '❌ 1/3');
+  assert.equal(await text(page, '#passStrikes'), 'Strikes❌⬜⬜');
+  assert.equal(await text(page, '#passWord'), '🔁 The word: ' + word1, 'same word after a strike');
+  turn = await playBattleTurn(page, (limit) => limit - 1); // Ann again
+  assert.equal(turn.word, word1);
   assert.equal(turn.verdict, 'Amazing!');
 
-  // Bob says nothing -> tries again, same word and limit
   await page.click('#nextBtn');
-  turn = await playBattleTurn(page, () => null);
+  turn = await playBattleTurn(page, () => null); // Bob says nothing
   assert.equal(turn.verdict, "Didn't hear you!");
   assert.equal(await text(page, '#nextBtn'), 'Try again →');
   await page.click('#nextBtn');
   assert.equal(await text(page, '#passName'), 'Bob');
+  assert.equal(await text(page, '#gameMode'), '❌ 1/3', 'not hearing you is not a strike');
   turn = await playBattleTurn(page, (limit) => limit - 1);
   assert.equal(turn.limit, 85);
-  assert.equal(turn.word, secondWord);
 
-  // Cat: 115 is above what the phone can measure (~102 dB): scream!
   await page.click('#nextBtn');
-  turn = await playBattleTurn(page, () => 100);
+  turn = await playBattleTurn(page, () => 100); // Cat: 115 is above what the phone measures
   assert.equal(turn.limit, 115);
   assert.equal(turn.maxNote, true, 'the "scream as loud as you can" note shows');
   assert.match(await text(page, '#resultLevel'), /Ladder complete/);
   assert.equal(await text(page, '#nextBtn'), "Blues's turn →");
 
-  // the battle survives a reload
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#passTeam'), 'Blues · step 1 of 3');
+  assert.equal(await text(page, '#passWord'), '🔁 The word: ' + word1, 'Blues get the same word');
+  for (const db of [47, 84.5]) {
+    turn = await playBattleTurn(page, () => db);
+    assert.equal(turn.word, word1);
+    await page.click('#nextBtn');
+  }
+  turn = await playBattleTurn(page, () => 101);
+  assert.equal(await text(page, '#nextBtn'), 'See game 1 result 🏆');
+  await page.click('#nextBtn');
+  await page.waitForSelector(visible('win'));
+  assert.equal(await text(page, '#winName'), 'Blues');
+  assert.equal(await text(page, '#winSuffix'), 'win game 1!');
+  assert.equal(await text(page, '#winMsg'), 'Closest at 2 of 3 limits (Reds: 1). Next game: Blues start.');
+  assert.equal(await text(page, '#winLast'), 'Match: Reds 0 – 1 Blues · best of 3');
+  assert.equal(await page.isVisible('#nextGameBtn'), true);
+  assert.equal(await page.isVisible('#winButtons'), false);
+  const rows = await tableRows(page, '#winBattle');
+  assert.match(rows[0][1], /^49\.\d 🏆$/);
+  assert.match(rows[1][2], /^84\.\d 🏆$/);
+  assert.match(rows[2][2], /^10[01]\.\d 🏆$/);
+  assert.deepEqual(await page.$$eval('#winBattle tfoot tr', (trs) => trs.map((tr) => tr.textContent)), ['Strikes❌–', 'Limits won12']);
+
+  // the match survives a reload between games
   await page.reload();
   await page.click('.tab[data-tab="game"]');
-  assert.match(await text(page, '#resumeInfo'), /Team battle · Reds vs Blues · Blues on step 1 of 3/);
+  assert.equal(await text(page, '#resumeInfo'), 'Reds 0 – 1 Blues · game 1 of 3');
   await page.click('#continueBtn');
+  await page.waitForSelector(visible('win'));
+  assert.equal(await text(page, '#nextGameBtn'), 'Start game 2 →');
+
+  /* ---- game 2: Blues start, and strike out ---- */
+  await page.click('#nextGameBtn');
   await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passMatch'), 'Game 2 of 3 · Reds 0 – 1 Blues');
   assert.equal(await text(page, '#passTeam'), 'Blues · step 1 of 3');
   assert.equal(await text(page, '#passName'), 'Dan');
+  assert.equal(await text(page, '#passWord'), '🆕 New word coming up!');
+  assert.equal(await text(page, '#gameMode'), '❌ 0/3');
+  let word2 = null;
+  for (let strike = 1; strike <= 3; strike++) {
+    turn = await playBattleTurn(page, () => 55);
+    word2 = word2 || turn.word;
+    assert.equal(turn.word, word2, 'same word through the strikes');
+    if (strike < 3) {
+      assert.equal(turn.verdict, 'Too loud!');
+      await page.click('#nextBtn');
+    }
+  }
+  assert.notEqual(word2, word1, 'a new word for a new game');
+  assert.equal(turn.verdict, 'Strike 3!');
+  assert.equal(await text(page, '#resultLevel'), 'Blues struck out: Reds win game 2!');
+  await page.click('#nextBtn');
+  await page.waitForSelector(visible('win'));
+  assert.equal(await text(page, '#winSuffix'), 'win game 2!');
+  assert.equal(await text(page, '#winName'), 'Reds');
+  assert.equal(await text(page, '#winLast'), 'Match: Reds 1 – 1 Blues · best of 3');
 
-  for (const db of [47, 84.5, 101]) {
-    turn = await playBattleTurn(page, () => db);
-    assert.notEqual(turn.verdict, 'Too loud!');
+  /* ---- game 3: Reds start, strike out, Blues win the match ---- */
+  await page.click('#nextGameBtn');
+  await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passTeam'), 'Reds · step 1 of 3');
+  for (let strike = 1; strike <= 3; strike++) {
+    await playBattleTurn(page, () => 56);
     await page.click('#nextBtn');
   }
   await page.waitForSelector(visible('win'));
   assert.equal(await text(page, '#winName'), 'Blues');
-  assert.equal(await text(page, '#winSuffix'), 'wins!');
-  assert.equal(await text(page, '#winMsg'), 'Closest at 2 of 3 limits (Reds: 1).');
-  const rows = await tableRows(page, '#winBattle');
-  assert.deepEqual(rows.map((r) => r[0]), ['50 dB', '85 dB', '115 dB']);
-  assert.match(rows[0][1], /^49\.\d 🏆$/);
-  assert.match(rows[1][2], /^84\.\d 🏆$/);
-  assert.match(rows[2][2], /^10[01]\.\d 🏆$/);
-  assert.deepEqual(await page.$$eval('#winBattle tfoot td', (c) => c.map((x) => x.textContent)), ['1', '2']);
+  assert.equal(await text(page, '#winSuffix'), 'win the match!');
+  assert.equal(await text(page, '#winMsg'), 'Game 3: Reds struck out (3 strikes). Final score 2–1 in games.');
+  assert.equal(await page.isVisible('#nextGameBtn'), false);
+  assert.equal(await page.isVisible('#winButtons'), true);
+  assert.equal(await text(page, '#rematchBtn'), '🔁 New match');
+  const history = await page.$$eval('#winHistory li', (lis) => lis.map((li) => li.textContent));
+  assert.equal(history.length, 3);
+  assert.match(history[0], /^Game 1🏅 Blues2–1 on limits/);
+  assert.match(history[1], /^Game 2🏅 RedsBlues struck out/);
+  assert.match(history[2], /^Game 3🏅 BluesReds struck out/);
 
   await page.reload();
   await page.click('.tab[data-tab="game"]');
-  assert.equal(await page.isVisible('#resumeCard'), false, 'a finished battle is not offered again');
+  assert.equal(await page.isVisible('#resumeCard'), false, 'a finished match is not offered again');
   assert.equal(await page.isChecked('input[name="gameMode"][value="team"]'), true, 'setup remembered');
   assert.equal(await page.inputValue('#teamName1'), 'Blues');
   assert.deepEqual(errors, []);
   await context.close();
 });
 
-test('team battle with one team per phone: own score table to compare', { skip }, async () => {
+test('team battle with one team per phone: one game, strikes count, own score table', { skip }, async () => {
   const { page, context, errors } = await openApp();
   await setupBattle(page, [{ name: 'Us', players: ['Ann', 'Bob'] }], 1);
   assert.equal(await page.isVisible('#teamCard1'), false);
@@ -843,7 +896,12 @@ test('team battle with one team per phone: own score table to compare', { skip }
   assert.equal(await page.$eval('#ladderPreview span:last-child', (el) => el.className), 'top', '115 is above what the phone can measure');
   await page.click('#startGame');
   await page.waitForSelector(visible('pass'));
-  let turn = await playBattleTurn(page, () => 48);
+  assert.equal(await page.isVisible('#passMatch'), false, 'no match score for one team');
+  let turn = await playBattleTurn(page, () => 52);
+  assert.equal(turn.verdict, 'Too loud!');
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#gameMode'), '❌ 1/3');
+  turn = await playBattleTurn(page, () => 48);
   assert.equal(turn.verdict, 'Great!');
   await page.click('#nextBtn');
   turn = await playBattleTurn(page, () => 100);
@@ -852,15 +910,16 @@ test('team battle with one team per phone: own score table to compare', { skip }
   await page.waitForSelector(visible('win'));
   assert.equal(await text(page, '#winName'), 'Us');
   assert.equal(await text(page, '#winSuffix'), 'finished!');
-  assert.match(await text(page, '#winMsg'), /All 2 limits done, 1[67]\.\d dB under in total/);
+  assert.match(await text(page, '#winMsg'), /All 2 limits done with 1 strike, 1[67]\.\d dB under in total/);
   assert.equal((await page.$$('#winBattle thead th')).length, 2, 'one team column');
-  assert.match(await page.$eval('#winBattle tfoot', (el) => el.textContent), /Total under/);
+  assert.match(await page.$eval('#winBattle tfoot', (el) => el.textContent), /Strikes❌.*Total under/);
+  assert.equal(await page.isVisible('#winHistory'), false);
+  assert.equal(await text(page, '#rematchBtn'), '🔁 Play again');
 
-  // rematch keeps the team
   await page.click('#rematchBtn');
   await page.waitForSelector(visible('pass'));
   assert.equal(await text(page, '#passTeam'), 'Us · step 1 of 2');
-  assert.equal(await text(page, '#gameMode'), 'Try 1');
+  assert.equal(await text(page, '#gameMode'), '❌ 0/3');
   assert.deepEqual(errors, []);
   await context.close();
 });

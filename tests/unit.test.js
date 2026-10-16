@@ -405,59 +405,155 @@ test('battlePlayer: players take turns, a smaller team wraps around', () => {
 
 test('applyBattle: under the limit saves the score and moves up, same word', () => {
   const g = Core.newBattle([{ count: 3 }, { count: 3 }]);
-  g.teams[0].word = 'Penguin';
+  g.word = 'Penguin';
   let c = Core.applyBattle(g, { heard: true, peak: 47.96 });
   assert.equal(c.kind, 'saved');
   assert.equal(c.score, 48);
   assert.deepEqual(g.teams[0].scores, [48, null, null]);
   assert.equal(g.step, 1);
-  assert.equal(g.teams[0].word, 'Penguin', 'the next player says the same word');
+  assert.equal(g.word, 'Penguin', 'the next player says the same word');
   c = Core.applyBattle(g, { heard: true, peak: 85.04 });
   assert.equal(c.kind, 'saved', 'exactly on the limit (shown as 85.0) counts');
   assert.equal(c.score, 85);
 });
 
-test('applyBattle: over the limit wipes the try, back to step 1 with a new word', () => {
+test('applyBattle: over the limit is a strike, back to step 1 with the SAME word', () => {
   const g = Core.newBattle([{ count: 3 }, { count: 3 }]);
-  g.teams[0].word = 'Penguin';
+  g.word = 'Penguin';
   Core.applyBattle(g, { heard: true, peak: 49 });
   const c = Core.applyBattle(g, { heard: true, peak: 85.06 });
   assert.equal(c.kind, 'bust');
   assert.equal(c.score, 85.1);
-  assert.deepEqual(g.teams[0].scores, [null, null, null]);
+  assert.equal(c.strikes, 1);
+  assert.deepEqual(g.teams[0].scores, [null, null, null], 'that try is wiped');
   assert.equal(g.step, 0);
-  assert.equal(g.teams[0].attempt, 2);
-  assert.equal(g.teams[0].word, null, 'a new word is drawn next turn');
+  assert.equal(g.teams[0].strikes, 1);
+  assert.equal(g.word, 'Penguin', 'same word, so both teams get the same word');
   assert.equal(g.current, 0, 'still the same team');
+  assert.equal(g.gameOver, false);
 });
 
 test('applyBattle: nothing heard = try again, nothing changes', () => {
   const g = Core.newBattle([{ count: 2 }]);
-  g.teams[0].word = 'Penguin';
+  g.word = 'Penguin';
   const before = JSON.stringify(g);
   const c = Core.applyBattle(g, { heard: false, peak: 30 });
   assert.equal(c.kind, 'retry');
   assert.equal(JSON.stringify(g), before);
 });
 
-test('applyBattle: a finished ladder hands over to the other team, then the game ends', () => {
+test('applyBattle: three strikes and the team loses the game; the other team wins without playing', () => {
+  const g = Core.newBattle([{ name: 'Reds', count: 2 }, { name: 'Blues', count: 2 }]);
+  g.word = 'Penguin';
+  assert.equal(Core.applyBattle(g, { heard: true, peak: 60 }).kind, 'bust');
+  assert.equal(Core.applyBattle(g, { heard: true, peak: 48 }).kind, 'saved');
+  assert.equal(Core.applyBattle(g, { heard: true, peak: 116 }).kind, 'bust', 'a strike on any step');
+  const c = Core.applyBattle(g, { heard: true, peak: 51 });
+  assert.equal(c.kind, 'out');
+  assert.equal(c.strikes, 3);
+  assert.equal(c.gameOver, true);
+  assert.deepEqual(c.result, { winner: 1, reason: 'strikes', out: 0 });
+  assert.equal(c.nextTeam, undefined, 'Blues do not need to play');
+  assert.equal(g.teams[0].out, true);
+  assert.deepEqual(g.wins, [0, 1]);
+  assert.equal(g.finished, false, 'best of three goes on');
+  assert.equal(Core.applyBattle(g, { heard: true, peak: 40 }).kind, 'ignored', 'no more turns until the next game');
+});
+
+test('applyBattle: the second team striking out loses even after the first team finished', () => {
   const g = Core.newBattle([{ count: 2 }, { count: 2 }]);
   Core.applyBattle(g, { heard: true, peak: 48 });
-  let c = Core.applyBattle(g, { heard: true, peak: 100 });
-  assert.equal(c.teamDone, true);
-  assert.equal(c.nextTeam, 1);
+  const hand = Core.applyBattle(g, { heard: true, peak: 100 });
+  assert.equal(hand.teamDone, true);
+  assert.equal(hand.nextTeam, 1);
   assert.equal(g.current, 1);
-  assert.equal(g.step, 0);
-  assert.equal(g.teams[0].done, true);
-  Core.applyBattle(g, { heard: true, peak: 49 });
-  c = Core.applyBattle(g, { heard: true, peak: 99 });
-  assert.equal(c.finished, true);
+  for (let i = 0; i < 3; i++) Core.applyBattle(g, { heard: true, peak: 55 });
+  assert.equal(g.gameOver, true);
+  assert.deepEqual(g.wins, [1, 0]);
+  assert.equal(g.history[0].reason, 'strikes');
+  assert.equal(g.history[0].out, 1);
+});
+
+test('applyBattle: both teams finish -> closest at most limits wins the game', () => {
+  const g = Core.newBattle([{ count: 3 }, { count: 3 }]);
+  g.word = 'Penguin';
+  [49, 84, 100, 47, 84.5, 101].forEach((p) => Core.applyBattle(g, { heard: true, peak: p }));
+  assert.equal(g.gameOver, true);
+  assert.deepEqual(g.wins, [0, 1]);
+  assert.deepEqual(g.history[0], { gameNo: 1, winner: 1, reason: 'limits', out: null, word: 'Penguin', wins: [1, 2], under: [17, 17.5] });
+});
+
+test('best of three: new word and the other team starts each game; first to 2 wins the match', () => {
+  const g = Core.newBattle([{ count: 2 }, { count: 2 }]);
+  const strikeOut = () => {
+    for (let i = 0; i < 3; i++) Core.applyBattle(g, { heard: true, peak: 70 });
+  };
+  assert.equal(Core.nextGame(g), false, 'game 1 is not over yet');
+  g.word = 'Penguin';
+  strikeOut(); // game 1: team 1 strikes out -> team 2 wins
+  assert.deepEqual(g.wins, [0, 1]);
+  assert.equal(Core.nextGame(g), true);
+  assert.equal(g.gameNo, 2);
+  assert.equal(g.starter, 1, 'team 2 starts game 2');
+  assert.equal(g.current, 1);
+  assert.equal(g.word, null, 'a new word for the new game');
+  assert.deepEqual(g.teams.map((t) => [t.strikes, t.out, t.done]), [[0, false, false], [0, false, false]]);
+  assert.deepEqual(g.teams[0].scores, [null, null]);
+  strikeOut(); // game 2: team 2 strikes out -> team 1 wins
+  assert.deepEqual(g.wins, [1, 1]);
+  assert.equal(g.finished, false);
+  Core.nextGame(g);
+  assert.equal(g.starter, 0, 'team 1 starts game 3');
+  strikeOut(); // game 3: team 1 strikes out -> team 2 wins the match
+  assert.deepEqual(g.wins, [1, 2]);
   assert.equal(g.finished, true);
+  assert.equal(Core.matchWinner(g), 1);
   assert.equal(Core.isGameOver(g), true);
-  // one team only: done after its own ladder
-  const solo = Core.newBattle([{ count: 2 }]);
-  Core.applyBattle(solo, { heard: true, peak: 40 });
-  assert.equal(Core.applyBattle(solo, { heard: true, peak: 90 }).finished, true);
+  assert.equal(Core.nextGame(g), false, 'no game 4');
+  assert.deepEqual(g.history.map((h) => h.winner), [1, 0, 1]);
+});
+
+test('best of three: a 2-0 ends the match after two games', () => {
+  const g = Core.newBattle([{ count: 2 }, { count: 2 }]);
+  for (let game = 0; game < 2; game++) {
+    for (let i = 0; i < 3; i++) Core.applyBattle(g, { heard: true, peak: 70 }); // the starter strikes out
+    if (game === 0) Core.nextGame(g);
+  }
+  // game 1: team 1 out -> team 2; game 2: team 2 starts and is out -> team 1. That is 1-1, not over.
+  assert.deepEqual(g.wins, [1, 1]);
+  const h = Core.newBattle([{ count: 2 }, { count: 2 }]);
+  const play = (scores) => scores.forEach((p) => Core.applyBattle(h, { heard: true, peak: p }));
+  play([49, 100, 45, 90]); // team 1 closer on both limits
+  Core.nextGame(h);
+  play([45, 90, 49, 100]); // team 2 starts, team 1 closer again
+  assert.deepEqual(h.wins, [2, 0]);
+  assert.equal(h.finished, true);
+  assert.equal(h.gameNo, 2);
+});
+
+test('a drawn game counts for nobody and is replayed', () => {
+  const g = Core.newBattle([{ count: 2 }, { count: 2 }]);
+  [48, 100, 48, 100].forEach((p) => Core.applyBattle(g, { heard: true, peak: p }));
+  assert.equal(g.gameOver, true);
+  assert.equal(g.history[0].winner, null);
+  assert.equal(g.history[0].reason, 'tie');
+  assert.deepEqual(g.wins, [0, 0]);
+  assert.equal(Core.nextGame(g), true);
+  assert.equal(g.gameNo, 2);
+});
+
+test('one team per phone: a single game; three strikes ends it', () => {
+  const g = Core.newBattle([{ count: 2 }]);
+  Core.applyBattle(g, { heard: true, peak: 40 });
+  const done = Core.applyBattle(g, { heard: true, peak: 90 });
+  assert.equal(done.gameOver, true);
+  assert.equal(done.finished, true);
+  assert.equal(g.history[0].reason, 'done');
+  const h = Core.newBattle([{ count: 2 }]);
+  for (let i = 0; i < 3; i++) Core.applyBattle(h, { heard: true, peak: 60 });
+  assert.equal(h.finished, true);
+  assert.equal(h.history[0].reason, 'out');
+  assert.equal(h.history[0].winner, null);
 });
 
 test('compareBattle: closest per limit wins it, most limits wins, then closest overall', () => {
@@ -504,15 +600,23 @@ test('rateCloseness: how close to the limit', () => {
 
 test('sanitizeGame: team battles round-trip; broken ones are rejected', () => {
   const g = Core.newBattle([{ name: 'Reds', count: 3 }, { name: 'Blues', count: 2 }]);
-  g.teams[0].word = 'Penguin';
+  g.word = 'Penguin';
   Core.applyBattle(g, { heard: true, peak: 48 });
-  const copy = Core.sanitizeGame(JSON.parse(JSON.stringify(g)));
-  assert.deepEqual(copy, g);
+  Core.applyBattle(g, { heard: true, peak: 99 }); // a strike
+  assert.deepEqual(Core.sanitizeGame(JSON.parse(JSON.stringify(g))), g);
+  // mid-match, after a game
+  const m = Core.newBattle([{ count: 2 }, { count: 2 }]);
+  for (let i = 0; i < 3; i++) Core.applyBattle(m, { heard: true, peak: 70 });
+  assert.deepEqual(Core.sanitizeGame(JSON.parse(JSON.stringify(m))), m);
+  Core.nextGame(m);
+  assert.deepEqual(Core.sanitizeGame(JSON.parse(JSON.stringify(m))), m);
+
   const broken = (fn) => {
     const x = JSON.parse(JSON.stringify(g));
     fn(x);
     return Core.sanitizeGame(x);
   };
+  assert.equal(broken((x) => (x.v = 1)), null, 'battles saved by the previous version are dropped');
   assert.equal(broken((x) => (x.teams = [])), null);
   assert.equal(broken((x) => (x.current = 2)), null);
   assert.equal(broken((x) => (x.step = 3)), null);
@@ -520,8 +624,14 @@ test('sanitizeGame: team battles round-trip; broken ones are rejected', () => {
   assert.equal(broken((x) => (x.teams[0].scores[0] = 60)), null, 'a score above its limit');
   assert.equal(broken((x) => (x.teams[1].done = true)), null, 'done with missing scores');
   assert.equal(broken((x) => (x.teams[0].players = [])), null);
-  assert.equal(broken((x) => (x.teams[0].word = 5)).teams[0].word, null);
-  assert.equal(Core.isGameOver(copy), false);
+  assert.equal(broken((x) => (x.teams[0].strikes = 4)), null);
+  assert.equal(broken((x) => (x.teams[0].out = true)), null, 'out without 3 strikes');
+  assert.equal(broken((x) => (x.wins = [0])), null);
+  assert.equal(broken((x) => (x.wins = [5, 0])), null);
+  assert.equal(broken((x) => (x.finished = true)), null, 'finished but the game is not over');
+  assert.equal(broken((x) => (x.history = [{ reason: 'magic', winner: 0 }])), null);
+  assert.equal(broken((x) => (x.word = 5)).word, null);
+  assert.equal(Core.isGameOver(Core.sanitizeGame(JSON.parse(JSON.stringify(g)))), false);
 });
 
 test('sanitizeSetup: remembers mode, teams and names safely', () => {

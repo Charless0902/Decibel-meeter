@@ -96,11 +96,11 @@ In a noisy room, Solo targets too quiet to tell apart from the background are ra
   | 10 | 50 → 55 → 65 → 70 → 80 → 85 → 95 → 100 → 110 → 115 |
 
   If the teams are different sizes, the ladder follows the bigger team and the smaller team's players take extra turns.
-- **A turn:** the player says the team's word and tries to get **as close as possible to the limit without going over**. The score is saved (e.g. *58.2 at the 60 dB limit*) and the **next player says the same word** at the next limit.
-- **Too loud:** going over a limit sends the team **back to step 1 with a new word**, and the scores from that try are wiped.
-- **Didn't hear you:** the same player simply tries again.
-- **Both teams on one phone:** Team 1 climbs the whole ladder, then Team 2. At each limit, the team that got closer wins it. **Most limits wins**; if that's a draw, the team that was closer overall (fewest dB under in total) wins.
-- **One team per phone:** each phone shows its own score table at the end; compare them limit by limit.
+- **One word per game, the same for both teams.** The player says it and tries to get **as close as possible to the limit without going over**. The score is saved (e.g. *58.2 at the 60 dB limit*) and the next player says the word at the next limit.
+- **Strikes:** going over a limit is a strike. The team goes back to step 1 with the **same word**, and the scores from that try are wiped. **Three strikes in a game and that team loses the game** (if the starting team strikes out, the other team doesn't even need to play).
+- **Didn't hear you:** the same player simply tries again (not a strike).
+- **Both teams on one phone: best of three.** Team 1 climbs the whole ladder, then Team 2. If neither strikes out, the team that got closer at **more limits** wins the game (if that's a draw, the team that was closer overall; a perfect draw is replayed). **First to win 2 games wins the match.** The starting team alternates: Team 1 starts game 1, Team 2 game 2, Team 1 game 3. Each game gets a new word.
+- **One team per phone:** one game with the same strike rule; each phone shows its own score table at the end to compare limit by limit.
 - **Top of the ladder:** a phone can only measure up to about its calibration offset minus 3 dB (about 102 dB at the default +105). Limits above that are marked red on the setup screen and say *scream as loud as you can*: you can't go over them, so the loudest team wins those.
 
 #### Both modes
@@ -140,7 +140,7 @@ npm test             # unit tests + end-to-end tests in headless Chromium
 
 `localhost` counts as secure, so the mic works there on a computer. For a phone you need the HTTPS GitHub Pages link.
 
-The end-to-end tests drive the real app in headless Chromium with a simulated microphone (a tone at known volumes). They cover the meter's accuracy, zones, stats, graph and wake lock; calibration (slider, Match, voice calibration, moving old settings to the new default) and saved settings; offline loading under the GitHub Pages sub-path; and full games: Solo (perfect / too loud / too quiet / silence, both target ladders, difficulty windows, your own words, resuming, winning, noisy rooms) and Team battle (same word up the ladder, going over restarts with a new word, retry, handover between teams, resuming mid-battle, the final comparison, one team per phone). One test plays a WAV of known level through Chromium's fake microphone device to check the raw-audio constraints end to end.
+The end-to-end tests drive the real app in headless Chromium with a simulated microphone (a tone at known volumes). They cover the meter's accuracy, zones, stats, graph and wake lock; calibration (slider, Match, voice calibration, moving old settings to the new default) and saved settings; offline loading under the GitHub Pages sub-path; and full games: Solo (perfect / too loud / too quiet / silence, both target ladders, difficulty windows, your own words, resuming, winning, noisy rooms) and Team battle (a full best-of-three match: same word for both teams, strikes and striking out, retry, handover between teams, alternating starts, resuming between games, the match result, and one team per phone). One test plays a WAV of known level through Chromium's fake microphone device to check the raw-audio constraints end to end.
 
 ## Notes
 

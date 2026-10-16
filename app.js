@@ -8,7 +8,7 @@
 (function (root) {
   'use strict';
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
 
   /* =====================================================================
    * Core: pure, testable logic
@@ -40,8 +40,9 @@
     // Team battle: every team climbs the same ladder of limits, from 50 up to
     // 115 dB, one step per player (the bigger team sets the number of steps, so
     // more players means smaller jumps). Closest to each limit without going
-    // over wins that limit.
-    const TEAM = { start: 50, end: 115, maxTeams: 2, minPlayers: 1, maxPlayers: 10, sweetSpot: 3 };
+    // over wins that limit. Going over is a strike; three strikes lose the game.
+    // Two teams play best of three.
+    const TEAM = { start: 50, end: 115, maxTeams: 2, minPlayers: 1, maxPlayers: 10, sweetSpot: 3, strikes: 3, bestOf: 3 };
 
     const WORD_SOURCES = ['builtin', 'custom', 'both'];
     const CUSTOM_WORDS = { maxWords: 300, maxLength: 24, maxText: 6000 };
@@ -425,6 +426,7 @@
     }
 
     // teams: [{ name, count, names }], one or two of them.
+    // Two teams play a best-of-three match; a single team plays one game.
     function newBattle(teams) {
       const defs = (Array.isArray(teams) && teams.length ? teams : [{}]).slice(0, TEAM.maxTeams);
       const list = defs.map((t, i) => {
@@ -432,13 +434,34 @@
         const count = clamp(Math.round(Number(def.count) || 0), TEAM.minPlayers, TEAM.maxPlayers);
         const players = [];
         for (let p = 0; p < count; p++) players.push(cleanName(def.names && def.names[p], p));
-        return { name: cleanTeamName(def.name, i), players: players, scores: [], attempt: 1, word: null, done: false };
+        return { name: cleanTeamName(def.name, i), players: players, scores: [], strikes: 0, done: false, out: false };
       });
       const ladder = teamLadder(Math.max.apply(null, list.map((t) => t.players.length)));
       list.forEach((t) => {
         t.scores = ladder.map(() => null);
       });
-      return { v: 1, mode: 'team', teams: list, ladder: ladder, current: 0, step: 0, finished: false, bag: [], lastWord: null };
+      return {
+        v: 2,
+        mode: 'team',
+        teams: list,
+        ladder: ladder,
+        bestOf: TEAM.bestOf,
+        gameNo: 1,
+        starter: 0, // the team that started this game (it alternates)
+        current: 0,
+        step: 0,
+        word: null, // one word per game, the same for both teams
+        wins: list.map(() => 0),
+        history: [],
+        gameOver: false, // this game is decided
+        finished: false, // the whole match is over
+        bag: [],
+        lastWord: null,
+      };
+    }
+
+    function winsNeeded(game) {
+      return Math.floor(game.bestOf / 2) + 1;
     }
 
     // Who says the word now. A smaller team's players take extra turns.
@@ -447,12 +470,29 @@
       return team.players[game.step % team.players.length];
     }
 
-    // Applies one turn of the team battle. res = { heard, peak }.
-    // kind: 'saved' (under the limit, score kept), 'bust' (over the limit: the
-    // team starts again at step 1 with a new word) or 'retry' (nothing heard).
+    // Who won a game that is over: a team that struck out loses it; otherwise
+    // the per-limit comparison decides.
+    function decideGame(game) {
+      const out = game.teams.findIndex((t) => t.out);
+      if (game.teams.length === 1) return { winner: null, reason: out === 0 ? 'out' : 'done', out: out === -1 ? null : out };
+      if (out !== -1) return { winner: 1 - out, reason: 'strikes', out: out };
+      const cmp = compareBattle(game);
+      return { winner: cmp.winner, reason: cmp.reason, out: null, wins: cmp.wins, under: cmp.under };
+    }
+
+    // Applies one turn of the team battle. res = { heard, peak }. kind:
+    // 'saved' — under the limit: score kept, next player, same word.
+    // 'bust'  — over the limit: a strike; back to step 1 with the same word.
+    // 'out'   — third strike: this team loses the game.
+    // 'retry' — nothing heard: same player tries again.
+    // Also sets nextTeam (hand-over), gameOver + result, and finished (match over).
     function applyBattle(game, res) {
       const team = game.teams[game.current];
-      const info = { team: game.current, step: game.step, limit: game.ladder[game.step], player: battlePlayer(game) };
+      const info = { team: game.current, step: game.step, limit: game.ladder[game.step], player: battlePlayer(game), gameNo: game.gameNo };
+      if (game.gameOver) {
+        info.kind = 'ignored';
+        return info;
+      }
       if (!res || !res.heard) {
         info.kind = 'retry';
         return info;
@@ -460,31 +500,71 @@
       const score = Math.max(0, round1(res.peak));
       info.score = score;
       if (score > info.limit) {
-        info.kind = 'bust';
+        team.strikes += 1;
+        info.strikes = team.strikes;
         team.scores = game.ladder.map(() => null);
-        team.attempt += 1;
-        team.word = null;
         game.step = 0;
-        return info;
-      }
-      info.kind = 'saved';
-      team.scores[game.step] = score;
-      if (game.step + 1 < game.ladder.length) {
-        game.step += 1;
-        return info;
-      }
-      team.done = true;
-      info.teamDone = true;
-      const next = game.teams.findIndex((t) => !t.done);
-      if (next !== -1) {
-        game.current = next;
-        game.step = 0;
-        info.nextTeam = next;
+        if (team.strikes < TEAM.strikes) {
+          info.kind = 'bust';
+          return info;
+        }
+        info.kind = 'out';
+        team.out = true;
       } else {
+        info.kind = 'saved';
+        team.scores[game.step] = score;
+        if (game.step + 1 < game.ladder.length) {
+          game.step += 1;
+          return info;
+        }
+        team.done = true;
+        info.teamDone = true;
+      }
+      // This team's turn is over. Hand over if the other team still has to play.
+      const waiting = game.teams.findIndex((t) => !t.done && !t.out);
+      if (!team.out && waiting !== -1) {
+        game.current = waiting;
+        game.step = 0;
+        info.nextTeam = waiting;
+        return info;
+      }
+      const result = decideGame(game);
+      game.history.push({ gameNo: game.gameNo, winner: result.winner, reason: result.reason, out: result.out, word: game.word, wins: result.wins || null, under: result.under || null });
+      game.gameOver = true;
+      info.gameOver = true;
+      info.result = result;
+      if (result.winner !== null) game.wins[result.winner] += 1;
+      if (game.teams.length === 1 || (result.winner !== null && game.wins[result.winner] >= winsNeeded(game))) {
         game.finished = true;
         info.finished = true;
       }
       return info;
+    }
+
+    // Starts the next game of the match: fresh ladder, new word, and the other
+    // team starts (game 1: team 1, game 2: team 2, game 3: team 1).
+    function nextGame(game) {
+      if (!game.gameOver || game.finished) return false;
+      game.gameNo += 1;
+      game.starter = game.teams.length === 2 ? (game.gameNo - 1) % 2 : 0;
+      game.current = game.starter;
+      game.step = 0;
+      game.word = null;
+      game.gameOver = false;
+      game.teams.forEach((t) => {
+        t.scores = game.ladder.map(() => null);
+        t.strikes = 0;
+        t.done = false;
+        t.out = false;
+      });
+      return true;
+    }
+
+    // The match winner, once someone has won enough games.
+    function matchWinner(game) {
+      const need = winsNeeded(game);
+      const i = game.wins.findIndex((w) => w >= need);
+      return i === -1 ? null : i;
     }
 
     // Per limit, the higher score (closer without going over) wins it. Most
@@ -564,20 +644,26 @@
       return bag;
     }
 
+    const RESULT_REASONS = ['limits', 'closer', 'tie', 'strikes', 'out', 'done'];
+
     function sanitizeBattle(raw) {
+      if (raw.v !== 2) return null; // battles saved by an older version are dropped
       if (!Array.isArray(raw.teams) || raw.teams.length < 1 || raw.teams.length > TEAM.maxTeams) return null;
+      const n = raw.teams.length;
+      const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
       const teams = [];
-      for (let i = 0; i < raw.teams.length; i++) {
+      for (let i = 0; i < n; i++) {
         const t = raw.teams[i];
         if (!t || typeof t !== 'object' || !Array.isArray(t.players)) return null;
         if (t.players.length < TEAM.minPlayers || t.players.length > TEAM.maxPlayers) return null;
+        if (!int(t.strikes, 0, TEAM.strikes)) return null;
         teams.push({
           name: cleanTeamName(t.name, i),
           players: t.players.map((p, j) => cleanName(p, j)),
           scores: t.scores,
-          attempt: Number.isInteger(t.attempt) && t.attempt > 0 ? t.attempt : 1,
-          word: typeof t.word === 'string' && t.word && t.word.length <= CUSTOM_WORDS.maxLength ? t.word : null,
+          strikes: t.strikes,
           done: t.done === true,
+          out: t.out === true,
         });
       }
       const ladder = teamLadder(Math.max.apply(null, teams.map((t) => t.players.length)));
@@ -588,17 +674,48 @@
           if (v !== null && !(typeof v === 'number' && isFinite(v) && v >= 0 && v <= ladder[i])) return null;
         }
         if (t.done && t.scores.some((v) => v === null)) return null;
+        if (t.out !== (t.strikes >= TEAM.strikes)) return null;
       }
-      if (!Number.isInteger(raw.current) || raw.current < 0 || raw.current >= teams.length) return null;
-      if (!Number.isInteger(raw.step) || raw.step < 0 || raw.step >= ladder.length) return null;
+      const bestOf = TEAM.bestOf;
+      const need = Math.floor(bestOf / 2) + 1;
+      if (!int(raw.current, 0, n - 1) || !int(raw.starter, 0, n - 1)) return null;
+      if (!int(raw.step, 0, ladder.length - 1)) return null;
+      if (!int(raw.gameNo, 1, 99)) return null;
+      if (!Array.isArray(raw.wins) || raw.wins.length !== n || !raw.wins.every((w) => int(w, 0, need))) return null;
+      if (!Array.isArray(raw.history)) return null;
+      const history = [];
+      for (const h of raw.history) {
+        if (!h || typeof h !== 'object' || RESULT_REASONS.indexOf(h.reason) === -1) return null;
+        if (h.winner !== null && !int(h.winner, 0, n - 1)) return null;
+        const nums = (a) => (Array.isArray(a) && a.length === n && a.every((x) => typeof x === 'number' && isFinite(x)) ? a.slice() : null);
+        history.push({
+          gameNo: int(h.gameNo, 1, 99) ? h.gameNo : history.length + 1,
+          winner: h.winner,
+          reason: h.reason,
+          out: h.out !== null && int(h.out, 0, n - 1) ? h.out : null,
+          word: typeof h.word === 'string' ? h.word.slice(0, CUSTOM_WORDS.maxLength) : null,
+          wins: nums(h.wins),
+          under: nums(h.under),
+        });
+      }
+      const gameOver = raw.gameOver === true;
+      const finished = raw.finished === true;
+      if (finished && !gameOver) return null;
       return {
-        v: 1,
+        v: 2,
         mode: 'team',
         teams: teams,
         ladder: ladder,
+        bestOf: bestOf,
+        gameNo: raw.gameNo,
+        starter: raw.starter,
         current: raw.current,
         step: raw.step,
-        finished: raw.finished === true,
+        word: typeof raw.word === 'string' && raw.word && raw.word.length <= CUSTOM_WORDS.maxLength ? raw.word : null,
+        wins: raw.wins.slice(),
+        history: history,
+        gameOver: gameOver,
+        finished: finished,
         bag: sanitizeBag(raw),
         lastWord: typeof raw.lastWord === 'string' ? raw.lastWord : null,
       };
@@ -659,7 +776,8 @@
       clamp, round1, meanSquare, rms, powerToDb, rmsToDb, dbToPower, Smoother, Stats, zoneOf, median, speechLevel,
       windowForLevel, judge, targetRange, pickTarget, plannedTarget, targetFor, WordDetector, cleanName, newGame, shuffle,
       parseWords, wordList, drawWord, applyOutcome, sanitizeSettings, sanitizeGame, sanitizeSetup,
-      teamLadder, cleanTeamName, newBattle, battlePlayer, applyBattle, compareBattle, rateCloseness, isGameOver,
+      teamLadder, cleanTeamName, newBattle, battlePlayer, applyBattle, decideGame, nextGame, matchWinner, winsNeeded,
+      compareBattle, rateCloseness, isGameOver,
     };
   })();
 
@@ -1574,7 +1692,7 @@
 
   const MODE_HELP = {
     solo: 'Everyone plays for themselves. Hit the target to level up, miss and you drop back to level 1. First to level 10 wins.',
-    team: 'Players say the same word one after the other, each as close to their limit as they dare without going over. Go over and your team starts again with a new word. Closest at the most limits wins.',
+    team: 'Best of three games. Each game, both teams say the same word, player after player, as close to each limit as they dare. Over the limit is a strike and your team starts again; three strikes and you lose that game.',
   };
 
   // The name editors on the setup screen.
@@ -1653,7 +1771,14 @@
         if (now) cell.classList.add('now');
       });
     });
-    const foot = table.createTFoot().insertRow();
+    const strikes = table.createTFoot().insertRow();
+    th(strikes, 'Strikes');
+    game.teams.forEach((t, ti) => {
+      const cell = strikes.insertCell();
+      cell.dataset.team = String(ti);
+      cell.textContent = t.strikes ? '❌'.repeat(t.strikes) : '–';
+    });
+    const foot = table.tFoot.insertRow();
     if (game.teams.length === 2) {
       th(foot, 'Limits won');
       cmp.wins.forEach((w, ti) => {
@@ -1718,6 +1843,12 @@
       $('goBtn').addEventListener('click', () => this.go());
       $('nextBtn').addEventListener('click', () => this.showPass());
       $('rematchBtn').addEventListener('click', () => this.rematch());
+      $('nextGameBtn').addEventListener('click', () => {
+        if (this.isTeam() && Core.nextGame(this.data)) {
+          this.save();
+          this.showPass();
+        }
+      });
       $('newPlayersBtn').addEventListener('click', () => this.discard());
       $('quitBtn').addEventListener('click', () => this.quit());
       $('scoresBtn').addEventListener('click', () => this.openScores());
@@ -1774,8 +1905,8 @@
         const team = d.teams[d.current];
         round.textContent = team.name;
         round.dataset.team = String(d.current);
-        mode.textContent = 'Try ' + team.attempt;
-        mode.title = team.name + ', attempt ' + team.attempt;
+        mode.textContent = '❌ ' + team.strikes + '/' + Core.TEAM.strikes;
+        mode.title = team.name + ': ' + team.strikes + ' of ' + Core.TEAM.strikes + ' strikes';
         $('scoresBtn').textContent = '📋 Scores';
       } else {
         round.textContent = 'Round ' + d.round;
@@ -1875,7 +2006,7 @@
         box.appendChild(document.createTextNode(' dB'));
         let help = ladder.length + ' limits, one per player';
         if (s.teamCount === 2 && sizes[0] !== sizes[1]) help += "; the smaller team's players take extra turns";
-        help += '.';
+        help += '. Three strikes (going over) and a team loses the game.';
         if (ladder[ladder.length - 1] > ceiling) {
           help += ' This phone can measure up to about ' + ceiling + ' dB, so on the red limits it is all about screaming as loud as you can.';
         }
@@ -1891,7 +2022,9 @@
       if (this.data && this.data.mode === 'team') {
         const d = this.data;
         $('resumeInfo').textContent =
-          'Team battle · ' + d.teams.map((t) => t.name).join(' vs ') + ' · ' + d.teams[d.current].name + ' on step ' + (d.step + 1) + ' of ' + d.ladder.length;
+          d.teams.length === 2
+            ? d.teams[0].name + ' ' + d.wins[0] + ' – ' + d.wins[1] + ' ' + d.teams[1].name + ' · game ' + d.gameNo + ' of ' + d.bestOf
+            : d.teams[0].name + ' · step ' + (d.step + 1) + ' of ' + d.ladder.length + ' · ' + d.teams[0].strikes + ' strikes';
       } else if (this.data) {
         const leader = this.data.players.reduce((a, b) => (b.level > a.level ? b : a));
         $('resumeInfo').textContent =
@@ -1943,7 +2076,7 @@
         this.show('setup');
         return;
       }
-      if (Core.isGameOver(this.data)) {
+      if (this.isTeam() ? this.data.gameOver : Core.isGameOver(this.data)) {
         this.showWin();
         return;
       }
@@ -1962,17 +2095,28 @@
       $('passSoloRule').hidden = team;
       $('passBattleRule').hidden = !team;
       $('passWord').hidden = !team;
+      $('passStrikes').hidden = !team;
+      $('passMatch').hidden = !team || d.teams.length < 2;
       if (team) {
         const t = d.teams[d.current];
         const limit = d.ladder[d.step];
         screen.dataset.team = String(d.current);
+        if (d.teams.length === 2) {
+          $('passMatch').textContent =
+            'Game ' + d.gameNo + ' of ' + d.bestOf + ' · ' + d.teams[0].name + ' ' + d.wins[0] + ' – ' + d.wins[1] + ' ' + d.teams[1].name;
+        }
         $('passTeam').textContent = t.name + ' · step ' + (d.step + 1) + ' of ' + d.ladder.length;
         $('passName').textContent = Core.battlePlayer(d);
         $('passBadgeLabel').textContent = 'Limit ';
         $('passLevel').textContent = limit;
         $('passBadgeSuffix').textContent = ' dB';
         $('passLimit').textContent = limit;
-        $('passWord').textContent = t.word ? '🔁 Same word: ' + t.word : '🆕 New word coming up!';
+        $('passWord').textContent = d.word ? '🔁 The word: ' + d.word : '🆕 New word coming up!';
+        $('passStrikes').textContent = '';
+        $('passStrikes').appendChild(document.createTextNode('Strikes'));
+        const marks = document.createElement('b');
+        marks.textContent = '❌'.repeat(t.strikes) + '⬜'.repeat(Core.TEAM.strikes - t.strikes);
+        $('passStrikes').appendChild(marks);
         $('passTarget').hidden = true;
         renderPips($('passPips'), d.step, d.ladder.length);
         return;
@@ -2053,8 +2197,8 @@
       const floorSpl = spl(floorFs);
       if (team) {
         const tm = d.teams[d.current];
-        if (!tm.word) tm.word = Core.drawWord(d, Core.wordList(settings));
-        t.word = tm.word;
+        if (!d.word) d.word = Core.drawWord(d, Core.wordList(settings)); // one word per game, for both teams
+        t.word = d.word;
         t.target = d.ladder[d.step];
         t.win = Core.TEAM.sweetSpot;
         screen.dataset.team = String(d.current);
@@ -2143,7 +2287,7 @@
       const change = Core.applyBattle(this.data, res);
       if (change.finished) store.remove(KEYS.game);
       else this.save();
-      if (change.kind === 'bust') buzz([90, 60, 220]);
+      if (change.kind === 'bust' || change.kind === 'out') buzz([90, 60, 220]);
       this.renderBattleResult(change);
       if (change.kind === 'saved' && change.limit - change.score <= 1) Confetti.burst(90);
     },
@@ -2207,6 +2351,7 @@
       let v;
       if (change.kind === 'retry') v = { outcome: 'quiet', emoji: '👂', text: "Didn't hear you!" };
       else if (change.kind === 'bust') v = { outcome: 'loud', emoji: '🙉', text: 'Too loud!' };
+      else if (change.kind === 'out') v = { outcome: 'loud', emoji: '❌', text: 'Strike 3!' };
       else v = RATINGS[Core.rateCloseness(Core.round1(change.limit - change.score))];
       screen.dataset.outcome = v.outcome;
       $('resultEmoji').textContent = v.emoji;
@@ -2221,9 +2366,15 @@
       if (change.kind === 'retry') {
         delta = 'Nothing was louder than the room.';
         line = 'Same word, same limit: ' + change.player + ' tries again.';
-      } else if (change.kind === 'bust') {
+      } else if (change.kind === 'bust' || change.kind === 'out') {
         delta = Core.round1(change.score - change.limit).toFixed(1) + ' dB over the ' + change.limit + ' dB limit';
-        line = team.name + ' starts again at step 1 with a new word 😱';
+        if (change.kind === 'bust') {
+          line = 'Strike ' + change.strikes + ' of ' + Core.TEAM.strikes + '! ' + team.name + ' goes back to step 1, same word.';
+        } else if (change.result && change.result.winner !== null) {
+          line = team.name + ' struck out: ' + d.teams[change.result.winner].name + ' win game ' + change.gameNo + '!';
+        } else {
+          line = team.name + ' struck out!';
+        }
       } else {
         const under = Core.round1(change.limit - change.score);
         delta = under === 0 ? 'Exactly on the limit!' : under.toFixed(1) + ' dB under the limit';
@@ -2235,7 +2386,7 @@
       this.renderStrip(change.limit, Core.TEAM.sweetSpot, scored ? change.score : null);
 
       let next;
-      if (change.finished) next = 'See the results 🏆';
+      if (change.gameOver) next = d.teams.length === 2 ? 'See game ' + change.gameNo + ' result 🏆' : 'See the results 🏆';
       else if (change.nextTeam !== undefined) next = d.teams[change.nextTeam].name + "'s turn →";
       else if (change.kind === 'retry') next = 'Try again →';
       else if (change.kind === 'bust') next = 'Start again: ' + Core.battlePlayer(d) + ' →';
@@ -2262,56 +2413,115 @@
       $('winLast').textContent = last ? 'Winning word: "' + last.word + '" at ' + Core.round1(last.peak).toFixed(1) + ' dB' : '';
       $('winScores').hidden = false;
       $('winBattle').hidden = true;
+      $('winHistory').hidden = true;
+      $('nextGameBtn').hidden = true;
+      $('winButtons').hidden = false;
+      $('rematchBtn').textContent = '🔁 Rematch';
       $('newPlayersBtn').textContent = 'New players';
       renderScoreboard($('winScores'), d, d.winner);
       this.show('win');
       Confetti.burst(240);
     },
 
+    // A game of the battle is over: the game result, or the match result.
     showBattleEnd() {
       const d = this.data;
       const screen = this.screenEl('win');
+      const last = d.history[d.history.length - 1];
+      const two = d.teams.length === 2;
       $('winScores').hidden = true;
       $('winBattle').hidden = false;
-      const cmp = renderBattleTable($('winBattle'), d, false);
-      let trophy = '🏆';
+      renderBattleTable($('winBattle'), d, false);
+      const reasonText = (h) => {
+        if (h.reason === 'strikes') return d.teams[h.out].name + ' struck out (3 strikes).';
+        if (h.reason === 'limits') return 'Closest at ' + h.wins[h.winner] + ' of ' + d.ladder.length + ' limits (' + d.teams[1 - h.winner].name + ': ' + h.wins[1 - h.winner] + ').';
+        if (h.reason === 'closer') return 'Level on limits, but closer overall: ' + h.under[h.winner].toFixed(1) + ' vs ' + h.under[1 - h.winner].toFixed(1) + ' dB under.';
+        if (h.reason === 'tie') return 'Exactly as close at every limit: a draw, so it is replayed.';
+        return '';
+      };
+      let trophy;
       let name;
       let suffix;
       let msg;
-      if (d.teams.length === 1) {
-        trophy = '🏁';
-        name = d.teams[0].name;
-        suffix = ' finished!';
-        msg =
-          'All ' + d.ladder.length + ' limits done, ' + cmp.under[0].toFixed(1) + ' dB under in total. ' +
-          'Compare with the other team: at each limit, the closer team wins it.';
+      let match = '';
+      if (!two) {
+        const team = d.teams[0];
+        name = team.name;
+        if (last.reason === 'out') {
+          trophy = '❌';
+          suffix = ' struck out';
+          msg = 'Three times over the limit with "' + last.word + '". Shake it off and play again!';
+        } else {
+          const cmp = Core.compareBattle(d);
+          trophy = '🏁';
+          suffix = ' finished!';
+          msg =
+            'All ' + d.ladder.length + ' limits done with ' + team.strikes + ' strike' + (team.strikes === 1 ? '' : 's') + ', ' +
+            cmp.under[0].toFixed(1) + ' dB under in total. Compare with the other team: at each limit, the closer team wins it.';
+        }
         screen.dataset.team = '0';
-      } else if (cmp.winner === null) {
-        trophy = '🤝';
-        name = "It's a tie";
-        suffix = '!';
-        msg = 'Same number of limits (' + cmp.wins[0] + '–' + cmp.wins[1] + ') and exactly as close overall. Rematch!';
-        screen.removeAttribute('data-team');
       } else {
-        const w = cmp.winner;
-        const o = 1 - w;
-        name = d.teams[w].name;
-        suffix = ' wins!';
-        msg =
-          cmp.reason === 'limits'
-            ? 'Closest at ' + cmp.wins[w] + ' of ' + d.ladder.length + ' limits (' + d.teams[o].name + ': ' + cmp.wins[o] + ').'
-            : 'Level on limits (' + cmp.wins[0] + '–' + cmp.wins[1] + '), but ' + name + ' was closer overall: ' +
-              cmp.under[w].toFixed(1) + ' vs ' + cmp.under[o].toFixed(1) + ' dB under.';
-        screen.dataset.team = String(w);
+        match = 'Match: ' + d.teams[0].name + ' ' + d.wins[0] + ' – ' + d.wins[1] + ' ' + d.teams[1].name + ' · best of ' + d.bestOf;
+        if (d.finished) {
+          const champ = Core.matchWinner(d);
+          trophy = '🏆';
+          name = d.teams[champ].name;
+          suffix = ' win the match!';
+          msg = 'Game ' + last.gameNo + ': ' + reasonText(last) + ' Final score ' + d.wins[champ] + '–' + d.wins[1 - champ] + ' in games.';
+          screen.dataset.team = String(champ);
+        } else if (last.winner === null) {
+          trophy = '🤝';
+          name = 'Game ' + last.gameNo;
+          suffix = ' is a draw!';
+          msg = reasonText(last);
+          screen.removeAttribute('data-team');
+        } else {
+          trophy = '🏅';
+          name = d.teams[last.winner].name;
+          suffix = ' win game ' + last.gameNo + '!';
+          msg = reasonText(last) + ' Next game: ' + d.teams[(last.gameNo) % 2].name + ' start.';
+          screen.dataset.team = String(last.winner);
+        }
       }
       $('winTrophy').textContent = trophy;
       $('winName').textContent = name;
       $('winSuffix').textContent = suffix;
       $('winMsg').textContent = msg;
-      $('winLast').textContent = '';
-      $('newPlayersBtn').textContent = 'New game';
+      $('winLast').textContent = match;
+
+      // games played so far
+      const list = $('winHistory');
+      list.textContent = '';
+      list.hidden = !two;
+      if (two) {
+        d.history.forEach((h) => {
+          const li = document.createElement('li');
+          if (h.winner !== null) li.dataset.team = String(h.winner);
+          const no = document.createElement('span');
+          no.className = 'game-no';
+          no.textContent = 'Game ' + h.gameNo;
+          const who = document.createElement('b');
+          who.textContent = h.winner === null ? '🤝 Draw' : '🏅 ' + d.teams[h.winner].name;
+          const why = document.createElement('small');
+          let reason = 'replayed';
+          if (h.reason === 'strikes') reason = d.teams[h.out].name + ' struck out';
+          else if (h.reason === 'limits') reason = h.wins[h.winner] + '–' + h.wins[1 - h.winner] + ' on limits';
+          else if (h.reason === 'closer') reason = 'closer overall';
+          why.textContent = reason + (h.word ? ' · ' + h.word : '');
+          li.appendChild(no);
+          li.appendChild(who);
+          li.appendChild(why);
+          list.appendChild(li);
+        });
+      }
+      const more = two && !d.finished;
+      $('nextGameBtn').hidden = !more;
+      $('nextGameBtn').textContent = 'Start game ' + (d.gameNo + 1) + ' →';
+      $('winButtons').hidden = more;
+      $('rematchBtn').textContent = two ? '🔁 New match' : '🔁 Play again';
+      $('newPlayersBtn').textContent = 'New teams';
       this.show('win');
-      Confetti.burst(240);
+      if (trophy !== '❌') Confetti.burst(d.finished ? 240 : 120);
     },
 
     abortTurn(message) {

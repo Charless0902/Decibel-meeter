@@ -123,13 +123,13 @@
             <h2 class="card-title">Game mode</h2>
             <div class="segmented seg-stack" role="radiogroup" aria-label="Game mode">
               <label><input type="radio" name="gameMode" value="solo"><span><i aria-hidden="true">👤</i>Solo<small>first to level 10</small></span></label>
-              <label><input type="radio" name="gameMode" value="team"><span><i aria-hidden="true">👥</i>Team battle<small>50 → 115 dB ladder</small></span></label>
+              <label><input type="radio" name="gameMode" value="team"><span><i aria-hidden="true">👥</i>Team battle<small>best of 3, 3 strikes</small></span></label>
             </div>
             <p class="help" id="modeHelp"></p>
             <div class="option-block" id="teamCountBlock" role="radiogroup" aria-label="Teams on this phone" hidden>
               <span class="toggle-title">Teams on this phone</span>
               <div class="segmented seg-stack">
-                <label><input type="radio" name="teamCount" value="2"><span><i aria-hidden="true">⚔️</i>Both teams<small>one after the other</small></span></label>
+                <label><input type="radio" name="teamCount" value="2"><span><i aria-hidden="true">⚔️</i>Both teams<small>best of 3 games</small></span></label>
                 <label><input type="radio" name="teamCount" value="1"><span><i aria-hidden="true">📱</i>Just us<small>other team on their phone</small></span></label>
               </div>
             </div>
@@ -193,10 +193,11 @@
             <h3>👥 Team battle</h3>
             <ol>
               <li>The ladder of limits always goes from <b>50 dB</b> up to <b>115 dB</b>, one step per player. More players means smaller steps.</li>
-              <li>Player 1 says the team's word and tries to get <b>as close as possible to the limit without going over</b>. That score is saved, and the next player says the <b>same word</b> at the next limit.</li>
-              <li>Go over a limit and your team <b>starts again at step 1 with a new word</b> (the scores from that try are wiped).</li>
-              <li>Both teams on one phone: Team 1 climbs the whole ladder, then Team 2. At each limit, the team that got closer wins it. <b>Most limits wins</b> (if that's a draw, the team that was closer overall wins).</li>
-              <li>One team per phone: compare your score tables at the end.</li>
+              <li>Each game has <b>one word, the same for both teams</b>. Player 1 says it and tries to get <b>as close as possible to the limit without going over</b>. That score is saved, and the next player says the word at the next limit.</li>
+              <li>Going over a limit is a <b>strike</b>: your team goes back to step 1 (same word, scores from that try wiped). <b>Three strikes and your team loses the game.</b></li>
+              <li>When both teams finish the ladder, the team that got closer at <b>more limits</b> wins the game (if that's a draw, the team that was closer overall).</li>
+              <li>A match is <b>best of three</b>: first team to win 2 games wins. Team 1 starts game 1, Team 2 starts game 2, Team 1 starts game 3.</li>
+              <li>One team per phone: three strikes still knock you out; compare your score tables with the other phone at the end.</li>
             </ol>
             <p class="help">Pick <b>My words</b> to play with your own words: inside jokes, names, anything.</p>
           </details>
@@ -204,6 +205,7 @@
 
         <!-- Pass the phone -->
         <div class="screen center" data-screen="pass" hidden>
+          <p class="match-line" id="passMatch" hidden></p>
           <p class="team-tag" id="passTeam" hidden></p>
           <p class="kicker">Pass the phone to</p>
           <h1 class="big-name" id="passName">Player</h1>
@@ -213,6 +215,7 @@
           <p class="muted" id="passBattleRule" hidden>Get as close as you can to <b id="passLimit">50</b> dB without going over.</p>
           <p class="pass-target" id="passTarget" hidden><span id="passTargetIcon">📉</span> Target at this level: <b id="passTargetValue">85</b> dB</p>
           <p class="pass-target" id="passWord" hidden></p>
+          <p class="strikes" id="passStrikes" hidden></p>
           <button type="button" class="btn btn-primary btn-wide btn-xl" id="readyBtn">I'm ready</button>
           <p class="help">After you tap, everyone stays quiet for one second.</p>
           <p class="error" id="gameError" role="alert" hidden></p>
@@ -292,9 +295,11 @@
           <h1 class="big-name"><span id="winName">Player</span><span id="winSuffix"> wins!</span></h1>
           <p class="muted" id="winMsg"></p>
           <p class="help" id="winLast"></p>
+          <button type="button" class="btn btn-primary btn-wide btn-xl" id="nextGameBtn" hidden>Start game 2 →</button>
+          <ol class="history" id="winHistory" hidden></ol>
           <ol class="scoreboard" id="winScores"></ol>
           <div class="battle-wrap" id="winBattle" hidden></div>
-          <div class="row">
+          <div class="row" id="winButtons">
             <button type="button" class="btn btn-primary" id="rematchBtn">🔁 Rematch</button>
             <button type="button" class="btn btn-ghost" id="newPlayersBtn">New players</button>
           </div>
