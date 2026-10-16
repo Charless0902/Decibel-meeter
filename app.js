@@ -8,7 +8,7 @@
 (function (root) {
   'use strict';
 
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
 
   /* =====================================================================
    * Core: pure, testable logic
@@ -427,7 +427,8 @@
 
     // teams: [{ name, count, names }], one or two of them.
     // Two teams play a best-of-three match; a single team plays one game.
-    function newBattle(teams) {
+    // opts.steps: ladder size when it must match a team on another phone.
+    function newBattle(teams, opts) {
       const defs = (Array.isArray(teams) && teams.length ? teams : [{}]).slice(0, TEAM.maxTeams);
       const list = defs.map((t, i) => {
         const def = t || {};
@@ -436,7 +437,8 @@
         for (let p = 0; p < count; p++) players.push(cleanName(def.names && def.names[p], p));
         return { name: cleanTeamName(def.name, i), players: players, scores: [], strikes: 0, done: false, out: false };
       });
-      const ladder = teamLadder(Math.max.apply(null, list.map((t) => t.players.length)));
+      const biggest = Math.max.apply(null, list.map((t) => t.players.length));
+      const ladder = teamLadder(Math.max(biggest, Math.round(Number(opts && opts.steps) || 0)));
       list.forEach((t) => {
         t.scores = ladder.map(() => null);
       });
@@ -468,6 +470,15 @@
     function battlePlayer(game) {
       const team = game.teams[game.current];
       return team.players[game.step % team.players.length];
+    }
+
+    // Speech detection for a limit close to the room noise: the start margin
+    // shrinks from 6 dB down to 3 dB so a soft limit like 50 dB can still be
+    // heard. tooNoisy: even then, anything we can hear would be over the limit.
+    function battleMargins(floorDb, limit) {
+      const room = isFinite(floorDb) ? limit - floorDb : Infinity;
+      const on = clamp(Math.floor(room - 1), 3, VAD.onMargin);
+      return { onMargin: on, offMargin: Math.max(1, on - 2), tooNoisy: isFinite(floorDb) && floorDb + on >= limit };
     }
 
     // Who won a game that is over: a team that struck out loses it; otherwise
@@ -666,7 +677,11 @@
           out: t.out === true,
         });
       }
-      const ladder = teamLadder(Math.max.apply(null, teams.map((t) => t.players.length)));
+      const biggest = Math.max.apply(null, teams.map((t) => t.players.length));
+      const size = Array.isArray(raw.ladder) ? raw.ladder.length : 0;
+      if (size < Math.max(2, biggest) || size > TEAM.maxPlayers) return null;
+      const ladder = teamLadder(size);
+      if (ladder.some((v, i) => raw.ladder[i] !== v)) return null;
       for (const t of teams) {
         if (!Array.isArray(t.scores) || t.scores.length !== ladder.length) return null;
         for (let i = 0; i < ladder.length; i++) {
@@ -766,6 +781,7 @@
         teamCount: r.teamCount === 1 ? 1 : 2,
         solo: roster(r.solo, GAME.minPlayers, GAME.maxPlayers),
         teams: teams,
+        otherCount: Number.isInteger(r.otherCount) ? clamp(r.otherCount, TEAM.minPlayers, TEAM.maxPlayers) : 3,
       };
     }
 
@@ -776,7 +792,7 @@
       clamp, round1, meanSquare, rms, powerToDb, rmsToDb, dbToPower, Smoother, Stats, zoneOf, median, speechLevel,
       windowForLevel, judge, targetRange, pickTarget, plannedTarget, targetFor, WordDetector, cleanName, newGame, shuffle,
       parseWords, wordList, drawWord, applyOutcome, sanitizeSettings, sanitizeGame, sanitizeSetup,
-      teamLadder, cleanTeamName, newBattle, battlePlayer, applyBattle, decideGame, nextGame, matchWinner, winsNeeded,
+      teamLadder, cleanTeamName, newBattle, battlePlayer, battleMargins, applyBattle, decideGame, nextGame, matchWinner, winsNeeded,
       compareBattle, rateCloseness, isGameOver,
     };
   })();
@@ -1697,14 +1713,15 @@
 
   // The name editors on the setup screen.
   const ROSTERS = [
-    { key: 'solo', count: 'playerCount', minus: 'pcMinus', plus: 'pcPlus', list: 'nameList', min: Core.GAME.minPlayers, max: Core.GAME.maxPlayers },
-    { key: 0, count: 't0Count', minus: 't0Minus', plus: 't0Plus', list: 't0Names', min: Core.TEAM.minPlayers, max: Core.TEAM.maxPlayers },
-    { key: 1, count: 't1Count', minus: 't1Minus', plus: 't1Plus', list: 't1Names', min: Core.TEAM.minPlayers, max: Core.TEAM.maxPlayers },
+    { key: 'solo', label: '', count: 'playerCount', minus: 'pcMinus', plus: 'pcPlus', list: 'nameList', min: Core.GAME.minPlayers, max: Core.GAME.maxPlayers },
+    { key: 0, label: 'Team 1, ', count: 't0Count', minus: 't0Minus', plus: 't0Plus', list: 't0Names', min: Core.TEAM.minPlayers, max: Core.TEAM.maxPlayers },
+    { key: 1, label: 'Team 2, ', count: 't1Count', minus: 't1Minus', plus: 't1Plus', list: 't1Names', min: Core.TEAM.minPlayers, max: Core.TEAM.maxPlayers },
   ];
 
-  // Highest reading this phone can show: a full-scale sine is offset - 3 dB.
+  // Highest reading this phone can show: the loudest possible (fully clipped)
+  // signal is 0 dBFS, which reads as the calibration offset.
   function meterCeiling() {
-    return Math.floor(settings.offset - 3);
+    return Math.floor(settings.offset);
   }
 
   function renderPips(el, filled, total) {
@@ -1803,9 +1820,18 @@
     bar: null,
 
     init() {
-      this.setup = Core.sanitizeSetup(store.get(KEYS.setup));
-      const saved = Core.sanitizeGame(store.get(KEYS.game));
-      this.data = saved && !Core.isGameOver(saved) ? saved : null;
+      const storedSetup = store.get(KEYS.setup);
+      this.setup = Core.sanitizeSetup(storedSetup);
+      this.data = Core.sanitizeGame(store.get(KEYS.game)); // finished games too: their results can be shown again
+      // first run after an update: fill the setup screen from the saved game
+      if (!storedSetup && this.data && this.data.mode === 'solo') {
+        this.setup.solo = { count: this.data.players.length, names: this.data.players.map((p) => p.name) };
+      }
+      $('otherMinus').addEventListener('click', () => this.setOtherCount(this.setup.otherCount - 1));
+      $('otherPlus').addEventListener('click', () => this.setOtherCount(this.setup.otherCount + 1));
+      $('remeasureBtn').addEventListener('click', () => {
+        if (this.phase === 'reveal' && Mic.state === 'on') this.measureFloor();
+      });
 
       ROSTERS.forEach((r) => {
         $(r.minus).addEventListener('click', () => this.setCount(r, this.roster(r).count - 1));
@@ -1929,6 +1955,21 @@
       this.renderSetup();
     },
 
+    setOtherCount(n) {
+      this.setup.otherCount = Core.clamp(n, Core.TEAM.minPlayers, Core.TEAM.maxPlayers);
+      this.saveSetup();
+      this.renderSetup();
+    },
+
+    // Ladder size for a new battle: the bigger team (for "just us", including
+    // the team on the other phone).
+    battleSteps() {
+      const s = this.setup;
+      const sizes = s.teams.slice(0, s.teamCount).map((t) => t.count);
+      if (s.teamCount === 1) sizes.push(s.otherCount);
+      return Math.max.apply(null, sizes);
+    },
+
     renderRoster(r) {
       const roster = this.roster(r);
       $(r.count).textContent = roster.count;
@@ -1952,7 +1993,7 @@
         input.autocomplete = 'off';
         input.setAttribute('autocapitalize', 'words');
         input.setAttribute('enterkeyhint', i === roster.count - 1 ? 'done' : 'next');
-        input.setAttribute('aria-label', 'Name of player ' + (i + 1));
+        input.setAttribute('aria-label', r.label + 'name of player ' + (i + 1));
         input.addEventListener('input', () => {
           roster.names[i] = input.value;
           this.saveSetup();
@@ -1990,9 +2031,13 @@
       ROSTERS.forEach((r) => this.renderRoster(r));
 
       $('ladderCard').hidden = !team;
+      $('otherTeamRow').hidden = !team || s.teamCount !== 1;
+      $('otherCount').textContent = s.otherCount;
+      $('otherMinus').disabled = s.otherCount <= Core.TEAM.minPlayers;
+      $('otherPlus').disabled = s.otherCount >= Core.TEAM.maxPlayers;
       if (team) {
         const sizes = s.teams.slice(0, s.teamCount).map((t) => t.count);
-        const ladder = Core.teamLadder(Math.max.apply(null, sizes));
+        const ladder = Core.teamLadder(this.battleSteps());
         const ceiling = meterCeiling();
         const box = $('ladderPreview');
         box.textContent = '';
@@ -2000,14 +2045,16 @@
           if (i) box.appendChild(document.createTextNode(' → '));
           const step = document.createElement('span');
           step.textContent = limit;
-          if (limit > ceiling) step.className = 'top';
+          if (limit >= ceiling) step.className = 'top';
           box.appendChild(step);
         });
         box.appendChild(document.createTextNode(' dB'));
-        let help = ladder.length + ' limits, one per player';
-        if (s.teamCount === 2 && sizes[0] !== sizes[1]) help += "; the smaller team's players take extra turns";
+        let help = ladder.length + ' limits';
+        if (sizes.every((n) => n === ladder.length)) help += ', one per player';
+        else if (s.teamCount === 1) help += sizes[0] < ladder.length ? '; your players take turns to cover them all' : ', one per player';
+        else help += "; the smaller team's players take extra turns";
         help += '. Three strikes (going over) and a team loses the game.';
-        if (ladder[ladder.length - 1] > ceiling) {
+        if (ladder[ladder.length - 1] >= ceiling) {
           help += ' This phone can measure up to about ' + ceiling + ' dB, so on the red limits it is all about screaming as loud as you can.';
         }
         $('ladderHelp').textContent = help;
@@ -2019,7 +2066,19 @@
 
       const card = $('resumeCard');
       card.hidden = !this.data;
-      if (this.data && this.data.mode === 'team') {
+      const over = !!this.data && Core.isGameOver(this.data);
+      $('resumeTitle').textContent = over ? 'Last game' : 'Game in progress';
+      $('continueBtn').textContent = over ? '🏆 See results' : '▶ Continue';
+      if (this.data && over) {
+        const d = this.data;
+        let info;
+        if (d.mode !== 'team') info = d.players[d.winner].name + ' won';
+        else if (d.teams.length === 2) {
+          const champ = Core.matchWinner(d);
+          info = d.teams[champ].name + ' won the match ' + d.wins[champ] + '–' + d.wins[1 - champ];
+        } else info = d.teams[0].name + (d.teams[0].out ? ' struck out' : ' finished the ladder');
+        $('resumeInfo').textContent = info;
+      } else if (this.data && this.data.mode === 'team') {
         const d = this.data;
         $('resumeInfo').textContent =
           d.teams.length === 2
@@ -2035,7 +2094,10 @@
     start() {
       const s = this.setup;
       if (s.mode === 'team') {
-        this.data = Core.newBattle(s.teams.slice(0, s.teamCount).map((t) => ({ name: t.name, count: t.count, names: t.names })));
+        this.data = Core.newBattle(
+          s.teams.slice(0, s.teamCount).map((t) => ({ name: t.name, count: t.count, names: t.names })),
+          { steps: this.battleSteps() }
+        );
       } else {
         this.data = Core.newGame(s.solo.count, s.solo.names);
       }
@@ -2060,7 +2122,10 @@
 
     rematch() {
       if (this.data.mode === 'team') {
-        this.data = Core.newBattle(this.data.teams.map((t) => ({ name: t.name, count: t.players.length, names: t.players })));
+        this.data = Core.newBattle(
+          this.data.teams.map((t) => ({ name: t.name, count: t.players.length, names: t.players })),
+          { steps: this.data.ladder.length }
+        );
       } else {
         const names = this.data.players.map((p) => p.name);
         this.data = Core.newGame(names.length, names);
@@ -2110,7 +2175,10 @@
         $('passBadgeLabel').textContent = 'Limit ';
         $('passLevel').textContent = limit;
         $('passBadgeSuffix').textContent = ' dB';
-        $('passLimit').textContent = limit;
+        $('passBattleRule').textContent =
+          limit >= meterCeiling()
+            ? 'Scream as loud as you can: this phone can only measure up to about ' + meterCeiling() + ' dB.'
+            : 'Get as close as you can to ' + limit + ' dB without going over.';
         $('passWord').textContent = d.word ? '🔁 The word: ' + d.word : '🆕 New word coming up!';
         $('passStrikes').textContent = '';
         $('passStrikes').appendChild(document.createTextNode('Strikes'));
@@ -2205,12 +2273,12 @@
         $('revealKicker').textContent = tm.name + ' · ' + Core.battlePlayer(d) + ' · step ' + (d.step + 1) + '/' + d.ladder.length;
         $('revealAt').textContent = 'limit';
         const ceiling = meterCeiling();
-        $('revealMax').hidden = t.target <= ceiling;
+        $('revealMax').hidden = t.target < ceiling;
         $('revealMax').textContent = '📱 This phone measures up to about ' + ceiling + ' dB, so for this limit: scream as loud as you can!';
-        const hearFrom = Math.round(floorSpl + Core.VAD.onMargin);
-        $('revealNoisy').hidden = hearFrom < t.target;
-        $('revealNoisy').textContent =
-          "🔊 It's noisy here: we can only hear you above about " + hearFrom + ' dB, which is over this limit. Find a quieter spot, or go as soft as you can.';
+        const margins = Core.battleMargins(floorSpl, t.target);
+        $('revealNoisy').hidden = !margins.tooNoisy;
+        $('revealNoisyText').textContent =
+          "🔊 Too noisy for this limit: the room was " + Math.round(floorSpl) + ' dB, so anything we could hear would be over ' + t.target + ' dB. Hush everyone and measure again.';
         $('revealRaised').hidden = true;
       } else {
         const p = this.player();
@@ -2244,7 +2312,7 @@
       }
       const t = this.turn;
       const floorSpl = spl(t.floorFs);
-      const detector = new Core.WordDetector(floorSpl);
+      const detector = new Core.WordDetector(floorSpl, this.isTeam() ? Core.battleMargins(floorSpl, t.target) : undefined);
       this.setupBar(t.target, t.win, floorSpl);
       $('listenWord').textContent = t.word;
       $('listenTargetLine').textContent = this.isTeam() ? 'Limit ' + t.target + ' dB' : 'Target ' + (t.target - t.win) + '–' + t.target + ' dB';
@@ -2272,10 +2340,9 @@
       const p = this.player();
       const outcome = res.heard ? Core.judge(res.peak, t.target, t.win) : 'quiet';
       const change = Core.applyOutcome(this.data, outcome);
-      this.save();
+      this.save(); // finished games stay saved, so their results survive a reload
       if (outcome !== 'perfect') buzz([90, 60, 220]);
       if (change.won) {
-        store.remove(KEYS.game); // finished games aren't resumed
         this.showWin({ word: t.word, peak: res.peak });
         return;
       }
@@ -2285,8 +2352,7 @@
 
     finishBattle(res) {
       const change = Core.applyBattle(this.data, res);
-      if (change.finished) store.remove(KEYS.game);
-      else this.save();
+      this.save(); // finished matches stay saved, so their results survive a reload
       if (change.kind === 'bust' || change.kind === 'out') buzz([90, 60, 220]);
       this.renderBattleResult(change);
       if (change.kind === 'saved' && change.limit - change.score <= 1) Confetti.burst(90);
@@ -2348,11 +2414,13 @@
       screen.dataset.team = String(change.team);
       $('resultTeam').hidden = false;
       $('resultTeam').textContent = team.name + ' · step ' + (change.step + 1) + ' of ' + d.ladder.length;
-      let v;
+      let v = null;
       if (change.kind === 'retry') v = { outcome: 'quiet', emoji: '👂', text: "Didn't hear you!" };
       else if (change.kind === 'bust') v = { outcome: 'loud', emoji: '🙉', text: 'Too loud!' };
       else if (change.kind === 'out') v = { outcome: 'loud', emoji: '❌', text: 'Strike 3!' };
-      else v = RATINGS[Core.rateCloseness(Core.round1(change.limit - change.score))];
+      // above what the phone can measure, closeness is judged against its maximum
+      const reach = Math.min(change.limit, meterCeiling());
+      if (!v) v = RATINGS[Core.rateCloseness(Math.max(0, Core.round1(reach - change.score)))];
       screen.dataset.outcome = v.outcome;
       $('resultEmoji').textContent = v.emoji;
       $('resultVerdict').textContent = v.text;
@@ -2377,7 +2445,8 @@
         }
       } else {
         const under = Core.round1(change.limit - change.score);
-        delta = under === 0 ? 'Exactly on the limit!' : under.toFixed(1) + ' dB under the limit';
+        if (reach < change.limit) delta = Math.max(0, Core.round1(reach - change.score)).toFixed(1) + " dB under this phone's maximum (about " + reach + ' dB)';
+        else delta = under === 0 ? 'Exactly on the limit!' : under.toFixed(1) + ' dB under the limit';
         line = 'Saved: ' + change.score.toFixed(1) + ' for ' + team.name + ' at the ' + change.limit + ' dB limit';
         if (change.teamDone) line += '. Ladder complete! 🎉';
       }
@@ -2600,7 +2669,8 @@
       if (team) renderBattleTable($('scoresBattle'), this.data, true);
       else renderScoreboard($('scoresList'), this.data, this.data.winner !== null ? this.data.winner : this.data.turn);
       $('scoresModal').hidden = false;
-      $('scoresClose').focus();
+      document.querySelector('#scoresModal .modal-card').scrollTop = 0;
+      $('scoresClose').focus({ preventScroll: true });
     },
 
     closeScores() {

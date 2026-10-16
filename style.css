@@ -796,7 +796,8 @@ input::placeholder {
   border-top: 1px solid var(--line);
 }
 .option-block.first,
-#setupOptions > .option-block:not([hidden]):first-child {
+#setupOptions > .option-block:not([hidden]):first-child,
+#setupOptions > .option-block[hidden] + .option-block[hidden] + .option-block {
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
@@ -917,8 +918,8 @@ textarea::placeholder {
 }
 
 /* team battle */
-[data-team="0"] { --team: var(--team0); }
-[data-team="1"] { --team: var(--team1); }
+[data-team="0"] { --team: var(--team0); --team-soft: rgba(255, 62, 154, 0.2); }
+[data-team="1"] { --team: var(--team1); --team-soft: rgba(47, 227, 255, 0.18); }
 
 .team-card {
   border-left: 6px solid var(--team);
@@ -967,8 +968,7 @@ textarea::placeholder {
   margin: 4px 0 0;
   padding: 5px 14px;
   border-radius: 999px;
-  background: var(--card-2);
-  background: color-mix(in srgb, var(--team, var(--pink)) 20%, transparent);
+  background: var(--team-soft, rgba(255, 62, 154, 0.2));
   border: 1px solid var(--team, var(--pink));
   color: var(--team, var(--pink));
   font-weight: 900;
@@ -979,9 +979,11 @@ textarea::placeholder {
   border-color: var(--team);
 }
 .game-bar .chip {
+  display: inline-block;
   max-width: 34vw;
   overflow: hidden;
   text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
 .match-line {
@@ -1042,6 +1044,21 @@ textarea::placeholder {
   margin-top: 16px;
 }
 
+.note-chip .btn {
+  display: flex;
+  margin: 8px auto 0;
+}
+.other-team {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.stepper-sm {
+  margin: 6px 0 0;
+}
+.stepper-sm output {
+  font-size: 2rem;
+}
 .note-chip {
   margin: 10px 0 0;
   padding: 8px 14px;
@@ -1059,9 +1076,13 @@ textarea::placeholder {
 }
 .battle-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0 6px;
   font-variant-numeric: tabular-nums;
+}
+.battle-table th:first-child {
+  width: 34%;
 }
 .battle-table th,
 .battle-table td {
@@ -1084,7 +1105,11 @@ textarea::placeholder {
   font-size: 0.85rem;
   font-weight: 900;
   color: var(--team, var(--muted));
-  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.battle-table td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1947,6 +1972,36 @@ textarea::placeholder {
   }
   .result-emoji {
     font-size: 3.6rem;
+  }
+  .screen[data-screen="pass"] .big-name {
+    font-size: clamp(34px, 11vw, 52px);
+    padding: 0;
+  }
+  .screen[data-screen="pass"] .level-badge {
+    margin-top: 6px;
+    padding: 5px 16px;
+  }
+  .screen[data-screen="pass"] .pips-lg {
+    margin: 8px 0 6px;
+  }
+  .screen[data-screen="pass"] .pips-lg i {
+    width: 16px;
+    height: 16px;
+  }
+  .screen[data-screen="pass"] .kicker {
+    margin: 2px 0;
+  }
+  .screen[data-screen="pass"] .muted {
+    margin: 6px 0;
+  }
+  .screen[data-screen="pass"] .pass-target {
+    padding: 5px 14px;
+  }
+  .screen[data-screen="pass"] .strikes {
+    margin-top: 6px;
+  }
+  .screen.center > .btn-wide {
+    margin-top: 12px;
   }
 }
 

@@ -110,7 +110,7 @@
 
           <div class="card resume-card" id="resumeCard" hidden>
             <div>
-              <h2 class="card-title">Game in progress</h2>
+              <h2 class="card-title" id="resumeTitle">Game in progress</h2>
               <p class="muted" id="resumeInfo"></p>
             </div>
             <div class="row">
@@ -146,7 +146,7 @@
             <p class="help">Names are optional.</p>
           </div>
 
-          <div class="card team-card" id="teamCard0" data-team="0" hidden>
+          <div class="card team-card" id="teamCard0" data-team="0" role="group" aria-label="Team 1" hidden>
             <input type="text" class="team-name" id="teamName0" maxlength="16" placeholder="Team 1" autocomplete="off" aria-label="Name of team 1">
             <div class="stepper">
               <button type="button" class="btn-round" id="t0Minus" aria-label="Fewer players in team 1">−</button>
@@ -156,7 +156,7 @@
             <div class="name-list" id="t0Names"></div>
           </div>
 
-          <div class="card team-card" id="teamCard1" data-team="1" hidden>
+          <div class="card team-card" id="teamCard1" data-team="1" role="group" aria-label="Team 2" hidden>
             <input type="text" class="team-name" id="teamName1" maxlength="16" placeholder="Team 2" autocomplete="off" aria-label="Name of team 2">
             <div class="stepper">
               <button type="button" class="btn-round" id="t1Minus" aria-label="Fewer players in team 2">−</button>
@@ -168,6 +168,15 @@
 
           <div class="card ladder-card" id="ladderCard" hidden>
             <h2 class="card-title">🪜 The ladder</h2>
+            <div class="other-team" id="otherTeamRow" hidden>
+              <span class="toggle-title">Players on the other team</span>
+              <div class="stepper stepper-sm">
+                <button type="button" class="btn-round" id="otherMinus" aria-label="Fewer players on the other team">−</button>
+                <output id="otherCount" aria-live="polite">3</output>
+                <button type="button" class="btn-round" id="otherPlus" aria-label="More players on the other team">+</button>
+              </div>
+              <p class="help">So both phones build the same ladder of limits.</p>
+            </div>
             <p class="ladder-steps" id="ladderPreview"></p>
             <p class="help" id="ladderHelp"></p>
           </div>
@@ -212,7 +221,7 @@
           <div class="level-badge"><span id="passBadgeLabel">Level </span><b id="passLevel">1</b><span id="passBadgeSuffix">/10</span></div>
           <div class="pips pips-lg" id="passPips" aria-hidden="true"></div>
           <p class="muted" id="passSoloRule">Your window: <b id="passWindow">5</b> dB under the target</p>
-          <p class="muted" id="passBattleRule" hidden>Get as close as you can to <b id="passLimit">50</b> dB without going over.</p>
+          <p class="muted" id="passBattleRule" hidden></p>
           <p class="pass-target" id="passTarget" hidden><span id="passTargetIcon">📉</span> Target at this level: <b id="passTargetValue">85</b> dB</p>
           <p class="pass-target" id="passWord" hidden></p>
           <p class="strikes" id="passStrikes" hidden></p>
@@ -239,7 +248,10 @@
           <p class="range-chip" id="revealChipSolo">Hit <b id="revealRange">67–70 dB</b>, not higher!</p>
           <p class="range-chip" id="revealChipBattle" hidden>Get close, but don't go over!</p>
           <p class="note-chip" id="revealMax" hidden></p>
-          <p class="note-chip" id="revealNoisy" hidden></p>
+          <div class="note-chip" id="revealNoisy" hidden>
+            <span id="revealNoisyText"></span>
+            <button type="button" class="btn btn-small btn-ghost" id="remeasureBtn">🤫 Hush &amp; measure again</button>
+          </div>
           <button type="button" class="btn-go" id="goBtn">GO!</button>
           <p class="help">Room noise: <span id="revealRoom">--</span> dB<span id="revealRaised" hidden> · noisy room, so the target was raised</span></p>
         </div>

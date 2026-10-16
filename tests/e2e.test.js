@@ -585,7 +585,11 @@ test('game: resumes after reload, Hard windows shrink to 2 and 1 dB, level 10 wi
 
   await page.reload();
   await page.click('.tab[data-tab="game"]');
-  assert.equal(await page.isVisible('#resumeCard'), false, 'a finished game is not offered again');
+  assert.equal(await text(page, '#resumeTitle'), 'Last game', 'the result survives a reload');
+  assert.equal(await text(page, '#resumeInfo'), 'Ann won');
+  await page.click('#continueBtn');
+  await page.waitForSelector(visible('win'));
+  assert.equal(await text(page, '#winName'), 'Ann');
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -759,6 +763,7 @@ test('team battle on one phone: best of three, 3 strikes lose a game, same word 
   /* ---- game 1: Reds start ---- */
   let turn = await playBattleTurn(page, (limit) => limit - 2); // Ann, 2 under 50
   assert.equal(turn.limit, 50);
+  assert.equal(turn.maxNote, false, 'no "scream" note on a limit the phone can measure');
   const word1 = turn.word;
   assert.equal(turn.verdict, 'Great!');
   assert.match(await text(page, '#resultLevel'), /Saved: 48\.\d for Reds at the 50 dB limit/);
@@ -782,7 +787,17 @@ test('team battle on one phone: best of three, 3 strikes lose a game, same word 
   assert.equal(turn.word, word1);
   assert.equal(turn.verdict, 'Amazing!');
 
-  await page.click('#nextBtn');
+  // a reload in the middle of the ladder keeps the word, the step and the strikes
+  await page.reload();
+  await page.click('.tab[data-tab="game"]');
+  assert.equal(await text(page, '#resumeInfo'), 'Reds 0 – 0 Blues · game 1 of 3');
+  await page.click('#continueBtn');
+  await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passTeam'), 'Reds · step 2 of 3');
+  assert.equal(await text(page, '#passName'), 'Bob');
+  assert.equal(await text(page, '#passWord'), '🔁 The word: ' + word1);
+  assert.equal(await text(page, '#gameMode'), '❌ 1/3');
+
   turn = await playBattleTurn(page, () => null); // Bob says nothing
   assert.equal(turn.verdict, "Didn't hear you!");
   assert.equal(await text(page, '#nextBtn'), 'Try again →');
@@ -796,6 +811,7 @@ test('team battle on one phone: best of three, 3 strikes lose a game, same word 
   turn = await playBattleTurn(page, () => 100); // Cat: 115 is above what the phone measures
   assert.equal(turn.limit, 115);
   assert.equal(turn.maxNote, true, 'the "scream as loud as you can" note shows');
+  assert.match(await text(page, '#resultDelta'), /dB under this phone's maximum \(about 105 dB\)/);
   assert.match(await text(page, '#resultLevel'), /Ladder complete/);
   assert.equal(await text(page, '#nextBtn'), "Blues's turn →");
 
@@ -881,22 +897,30 @@ test('team battle on one phone: best of three, 3 strikes lose a game, same word 
 
   await page.reload();
   await page.click('.tab[data-tab="game"]');
-  assert.equal(await page.isVisible('#resumeCard'), false, 'a finished match is not offered again');
+  assert.equal(await text(page, '#resumeTitle'), 'Last game', 'the match result survives a reload');
+  assert.equal(await text(page, '#resumeInfo'), 'Blues won the match 2–1');
+  assert.equal(await text(page, '#continueBtn'), '🏆 See results');
   assert.equal(await page.isChecked('input[name="gameMode"][value="team"]'), true, 'setup remembered');
   assert.equal(await page.inputValue('#teamName1'), 'Blues');
   assert.deepEqual(errors, []);
   await context.close();
 });
 
-test('team battle with one team per phone: one game, strikes count, own score table', { skip }, async () => {
+test('team battle with one team per phone: shared ladder size, strikes, rotation, then back to solo', { skip }, async () => {
   const { page, context, errors } = await openApp();
   await setupBattle(page, [{ name: 'Us', players: ['Ann', 'Bob'] }], 1);
   assert.equal(await page.isVisible('#teamCard1'), false);
+  assert.equal(await page.isVisible('#otherTeamRow'), true);
+  assert.equal(await text(page, '#ladderPreview'), '50 → 85 → 115 dB', 'sized for the other team (3 by default)');
+  assert.match(await text(page, '#ladderHelp'), /3 limits; your players take turns/);
+  await page.click('#otherMinus');
   assert.equal(await text(page, '#ladderPreview'), '50 → 115 dB');
   assert.equal(await page.$eval('#ladderPreview span:last-child', (el) => el.className), 'top', '115 is above what the phone can measure');
+  await page.click('#otherPlus');
   await page.click('#startGame');
   await page.waitForSelector(visible('pass'));
   assert.equal(await page.isVisible('#passMatch'), false, 'no match score for one team');
+  assert.equal(await text(page, '#passTeam'), 'Us · step 1 of 3');
   let turn = await playBattleTurn(page, () => 52);
   assert.equal(turn.verdict, 'Too loud!');
   await page.click('#nextBtn');
@@ -904,13 +928,17 @@ test('team battle with one team per phone: one game, strikes count, own score ta
   turn = await playBattleTurn(page, () => 48);
   assert.equal(turn.verdict, 'Great!');
   await page.click('#nextBtn');
+  turn = await playBattleTurn(page, () => 84); // Bob
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#passName'), 'Ann', 'Ann takes the third limit');
+  assert.equal(await text(page, '#passBattleRule'), 'Scream as loud as you can: this phone can only measure up to about 105 dB.');
   turn = await playBattleTurn(page, () => 100);
   assert.equal(await text(page, '#nextBtn'), 'See the results 🏆');
   await page.click('#nextBtn');
   await page.waitForSelector(visible('win'));
   assert.equal(await text(page, '#winName'), 'Us');
   assert.equal(await text(page, '#winSuffix'), 'finished!');
-  assert.match(await text(page, '#winMsg'), /All 2 limits done with 1 strike, 1[67]\.\d dB under in total/);
+  assert.match(await text(page, '#winMsg'), /All 3 limits done with 1 strike, 1[89]\.\d dB under in total/);
   assert.equal((await page.$$('#winBattle thead th')).length, 2, 'one team column');
   assert.match(await page.$eval('#winBattle tfoot', (el) => el.textContent), /Strikes❌.*Total under/);
   assert.equal(await page.isVisible('#winHistory'), false);
@@ -918,8 +946,68 @@ test('team battle with one team per phone: one game, strikes count, own score ta
 
   await page.click('#rematchBtn');
   await page.waitForSelector(visible('pass'));
-  assert.equal(await text(page, '#passTeam'), 'Us · step 1 of 2');
+  assert.equal(await text(page, '#passTeam'), 'Us · step 1 of 3', 'rematch keeps the ladder size');
   assert.equal(await text(page, '#gameMode'), '❌ 0/3');
+
+  // back to a solo game in the same session: no team leftovers on screen
+  await page.click('#quitBtn');
+  await page.waitForSelector(visible('setup'));
+  await page.click('input[name="gameMode"][value="solo"]');
+  assert.equal(await page.isVisible('#setupOptions [data-setting="difficulty"][value="easy"]'), true);
+  assert.equal(await page.isVisible('#ladderCard'), false);
+  const inputs = await page.$$('#nameList input');
+  await inputs[0].fill('Zed');
+  await page.click('#startGame');
+  await page.waitForSelector(visible('pass'));
+  assert.equal(await page.isVisible('#passTeam'), false);
+  assert.equal(await page.isVisible('#passStrikes'), false);
+  assert.equal(await text(page, '.level-badge'), 'Level 1/10');
+  assert.equal(await text(page, '#gameRound'), 'Round 1');
+  turn = await playTurn(page, (t, w) => t - w / 2);
+  assert.equal(await text(page, '#resultVerdict'), 'Perfect!');
+  assert.equal(await text(page, '#resultTargetLabel'), 'Target');
+  assert.equal(await page.isVisible('#resultTeam'), false);
+  assert.equal(await page.isVisible('#resultBattle'), false);
+  assert.equal(await page.isVisible('#resultScores'), true);
+  assert.equal(await page.$eval(visible('result'), (el) => el.hasAttribute('data-team')), false);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('team battle: a room too noisy for the limit can be re-measured without penalty', { skip }, async () => {
+  const { page, context, errors } = await openApp();
+  await page.evaluate(() => {
+    window.__mic.ambientDb = 48;
+    window.__mic.set(null);
+  });
+  await setupBattle(page, [{ name: 'Reds', players: ['Ann', 'Bob'] }, { name: 'Blues', players: ['Dan', 'Eve'] }], 2);
+  await page.click('#startGame');
+  await page.waitForSelector(visible('pass'));
+  await page.click('#readyBtn');
+  await page.waitForSelector(visible('reveal'), { timeout: 5000 });
+  assert.equal(await page.isVisible('#revealNoisy'), true);
+  assert.match(await text(page, '#revealNoisyText'), /Too noisy for this limit: the room was 48 dB/);
+  const word = await text(page, '#revealWord');
+  // everyone hushes, measure again
+  await page.evaluate(() => {
+    window.__mic.ambientDb = 40;
+    window.__mic.set(null);
+  });
+  await page.click('#remeasureBtn');
+  await page.waitForSelector(visible('quiet'));
+  await page.waitForSelector(visible('reveal'), { timeout: 5000 });
+  assert.equal(await page.isVisible('#revealNoisy'), false);
+  assert.equal(await text(page, '#revealWord'), word, 'same word');
+  assert.equal(await text(page, '#gameMode'), '❌ 0/3', 'no strike');
+  // and a soft 47 dB word in that room is heard and saved
+  await page.click('#goBtn');
+  await page.waitForSelector(visible('listen'));
+  await page.waitForTimeout(400);
+  await setLevel(page, 47);
+  await page.waitForTimeout(750);
+  await setLevel(page, null);
+  await page.waitForSelector(visible('result'), { timeout: 12000 });
+  assert.equal(await text(page, '#resultVerdict'), 'Great!');
   assert.deepEqual(errors, []);
   await context.close();
 });

@@ -371,10 +371,11 @@ test('team ladder: always 50 to 115 dB, one limit per player, smaller gaps for b
     assert.equal(l[n - 1], 115);
     for (let i = 1; i < n; i++) assert.ok(l[i] > l[i - 1], n + ': rising ' + l);
     l.forEach((v) => assert.equal(v % 5, 0));
-    const gap = 65 / (n - 1);
-    assert.ok(gap < lastGap, 'more players, smaller gaps');
-    lastGap = gap;
+    const biggestGap = Math.max.apply(null, l.slice(1).map((v, i) => v - l[i]));
+    assert.ok(biggestGap <= lastGap, n + ' players: the biggest jump never grows (' + biggestGap + ' > ' + lastGap + ')');
+    lastGap = biggestGap;
   }
+  assert.equal(lastGap, 10, '10 players: jumps of at most 10 dB');
   assert.equal(Core.teamLadder(1).length, 2, 'at least two limits');
   assert.equal(Core.teamLadder(40).length, 10);
 });
@@ -393,6 +394,34 @@ test('newBattle: one or two teams, shared ladder sized by the bigger team', () =
   assert.equal(Core.newBattle([{ count: 1 }]).ladder.length, 2);
   assert.equal(Core.newBattle([]).teams.length, 1);
   assert.equal(Core.newBattle([{}, {}, {}]).teams.length, 2);
+});
+
+test('newBattle: the ladder can be sized for a bigger team on another phone', () => {
+  const g = Core.newBattle([{ count: 2, names: ['Ann', 'Bob'] }], { steps: 3 });
+  assert.deepEqual(g.ladder, [50, 85, 115]);
+  g.step = 2;
+  assert.equal(Core.battlePlayer(g), 'Ann', 'players take turns to cover the extra limit');
+  assert.deepEqual(Core.newBattle([{ count: 4 }], { steps: 2 }).ladder.length, 4, 'never smaller than the team');
+  assert.ok(Core.sanitizeGame(JSON.parse(JSON.stringify(g))), 'a bigger ladder survives save/restore');
+});
+
+test('battleMargins: soft limits stay playable in a slightly noisy room', () => {
+  assert.deepEqual(Core.battleMargins(35, 50), { onMargin: 6, offMargin: 4, tooNoisy: false });
+  assert.deepEqual(Core.battleMargins(44, 50), { onMargin: 5, offMargin: 3, tooNoisy: false });
+  assert.deepEqual(Core.battleMargins(46, 50), { onMargin: 3, offMargin: 1, tooNoisy: false });
+  assert.deepEqual(Core.battleMargins(47, 50), { onMargin: 3, offMargin: 1, tooNoisy: true });
+  assert.deepEqual(Core.battleMargins(70, 115), { onMargin: 6, offMargin: 4, tooNoisy: false });
+  assert.deepEqual(Core.battleMargins(-Infinity, 50), { onMargin: 6, offMargin: 4, tooNoisy: false });
+  // a word 3.5 dB above a 46 dB room is detected with these margins, not with the default 6 dB
+  const frames = (d) => {
+    let t = 0;
+    let r = null;
+    const seq = [[400, 46], [600, 49.5], [1000, 46]];
+    for (const [ms, db] of seq) for (let e = 0; e < ms && !r; e += 50) r = d.push((t += 50), db, db);
+    return r;
+  };
+  assert.equal(frames(new Core.WordDetector(46, Core.battleMargins(46, 50))).heard, true);
+  assert.equal(frames(new Core.WordDetector(46)), null, 'the default margin would never hear it');
 });
 
 test('battlePlayer: players take turns, a smaller team wraps around', () => {
@@ -631,6 +660,9 @@ test('sanitizeGame: team battles round-trip; broken ones are rejected', () => {
   assert.equal(broken((x) => (x.finished = true)), null, 'finished but the game is not over');
   assert.equal(broken((x) => (x.history = [{ reason: 'magic', winner: 0 }])), null);
   assert.equal(broken((x) => (x.word = 5)).word, null);
+  assert.equal(broken((x) => (x.ladder = [50, 80, 115])), null, 'a ladder that is not ours');
+  assert.equal(broken((x) => (x.ladder = [50, 115])), null, 'smaller than the biggest team');
+  assert.equal(broken((x) => delete x.ladder), null);
   assert.equal(Core.isGameOver(Core.sanitizeGame(JSON.parse(JSON.stringify(g)))), false);
 });
 
@@ -648,4 +680,8 @@ test('sanitizeSetup: remembers mode, teams and names safely', () => {
   assert.equal(s.teams[0].count, 1);
   assert.equal(s.teams[0].names[0].length, 16);
   assert.deepEqual(s.teams[1], { name: '', count: 3, names: [] });
+  assert.equal(d.otherCount, 3);
+  assert.equal(Core.sanitizeSetup({ otherCount: 7 }).otherCount, 7);
+  assert.equal(Core.sanitizeSetup({ otherCount: 40 }).otherCount, 10);
+  assert.equal(Core.sanitizeSetup({ otherCount: 'x' }).otherCount, 3);
 });
