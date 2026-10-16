@@ -18,6 +18,8 @@
   --green-dark: #149a4c;
   --red: #ff4d5e;
   --orange: #ff8a3d;
+  --team0: #ff3e9a;
+  --team1: #2fe3ff;
   --radius: 22px;
   --tabbar-h: 66px;
   --safe-t: env(safe-area-inset-top, 0px);
@@ -280,10 +282,6 @@ strong {
   background: rgba(255, 62, 154, 0.18);
   border-color: rgba(255, 62, 154, 0.5);
   font-size: 1rem;
-}
-.chip-mode.team {
-  background: rgba(47, 227, 255, 0.15);
-  border-color: rgba(47, 227, 255, 0.5);
 }
 
 .row {
@@ -797,6 +795,23 @@ input::placeholder {
   padding-top: 14px;
   border-top: 1px solid var(--line);
 }
+.option-block.first,
+#setupOptions > .option-block:not([hidden]):first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--card-2);
+  font-size: 0.72rem;
+  font-weight: 900;
+  color: var(--muted);
+  vertical-align: middle;
+}
 
 .segmented {
   display: grid;
@@ -841,7 +856,8 @@ input::placeholder {
   grid-template-columns: repeat(3, 1fr);
   gap: 5px;
 }
-.seg-3 span {
+.seg-3 span,
+.seg-stack span {
   flex-direction: column;
   gap: 1px;
   min-height: 72px;
@@ -898,6 +914,152 @@ textarea::placeholder {
 
 .cal-voice {
   margin-top: 14px;
+}
+
+/* team battle */
+[data-team="0"] { --team: var(--team0); }
+[data-team="1"] { --team: var(--team1); }
+
+.team-card {
+  border-left: 6px solid var(--team);
+}
+.team-name {
+  width: 100%;
+  margin-bottom: 4px;
+  border: 0 !important;
+  border-bottom: 2px solid var(--line) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 6px 2px !important;
+  font-size: 1.4rem !important;
+  font-weight: 900 !important;
+  color: var(--team) !important;
+  box-shadow: none !important;
+}
+.team-name:focus {
+  border-bottom-color: var(--team) !important;
+}
+.team-name::placeholder {
+  color: var(--team);
+  opacity: 0.75;
+}
+
+.ladder-steps {
+  margin: 4px 0 0;
+  font-size: 1.15rem;
+  font-weight: 900;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+.ladder-steps span {
+  display: inline-block;
+  padding: 2px 9px;
+  margin: 2px 0;
+  border-radius: 10px;
+  background: var(--card-2);
+}
+.ladder-steps span.top {
+  background: rgba(255, 77, 94, 0.22);
+  color: #ffd0d5;
+}
+
+.team-tag {
+  margin: 4px 0 0;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: var(--card-2);
+  background: color-mix(in srgb, var(--team, var(--pink)) 20%, transparent);
+  border: 1px solid var(--team, var(--pink));
+  color: var(--team, var(--pink));
+  font-weight: 900;
+  font-size: 0.95rem;
+}
+.game-bar .chip[data-team] {
+  color: var(--team);
+  border-color: var(--team);
+}
+.game-bar .chip {
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.note-chip {
+  margin: 10px 0 0;
+  padding: 8px 14px;
+  max-width: 26em;
+  border-radius: 14px;
+  background: rgba(255, 210, 63, 0.12);
+  border: 1px solid rgba(255, 210, 63, 0.45);
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
+.battle-wrap {
+  width: 100%;
+  margin-top: 18px;
+}
+.battle-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 6px;
+  font-variant-numeric: tabular-nums;
+}
+.battle-table th,
+.battle-table td {
+  padding: 9px 8px;
+  text-align: center;
+  background: var(--card);
+}
+.battle-table th:first-child,
+.battle-table td:first-child {
+  border-radius: 12px 0 0 12px;
+  text-align: left;
+  padding-left: 14px;
+}
+.battle-table th:last-child,
+.battle-table td:last-child {
+  border-radius: 0 12px 12px 0;
+}
+.battle-table thead th {
+  background: transparent;
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: var(--team, var(--muted));
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.battle-table thead th:first-child {
+  color: var(--muted);
+}
+.battle-table td {
+  font-weight: 800;
+}
+.battle-table .limit {
+  font-weight: 900;
+  color: var(--muted);
+}
+.battle-table td.win {
+  background: rgba(52, 224, 122, 0.18);
+  color: #c9ffdd;
+}
+.battle-table td.now {
+  outline: 2px solid var(--team, var(--pink));
+  outline-offset: -2px;
+}
+.battle-table tfoot th,
+.battle-table tfoot td {
+  background: var(--card-2);
+  font-weight: 900;
+}
+[data-outcome="ok"] .verdict { color: var(--yellow); text-shadow: 0 0 36px rgba(255, 210, 63, 0.4); }
+
+.how h3 {
+  font-size: 1rem;
+  font-weight: 900;
+  margin: 10px 0 4px;
 }
 
 .pass-target {

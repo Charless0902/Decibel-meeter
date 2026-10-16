@@ -242,37 +242,25 @@ test('newGame: 2–10 players, default and cleaned names', () => {
 
 test('applyOutcome: success levels up, a miss resets that player, turns rotate', () => {
   const g = Core.newGame(3);
-  let c = Core.applyOutcome(g, 'perfect', false);
+  let c = Core.applyOutcome(g, 'perfect');
   assert.deepEqual(c, { index: 0, before: 1, after: 2, reset: 'none', won: false });
   assert.equal(g.turn, 1);
-  Core.applyOutcome(g, 'perfect', false); // P2 -> 2
-  Core.applyOutcome(g, 'perfect', false); // P3 -> 2
+  Core.applyOutcome(g, 'perfect'); // P2 -> 2
+  Core.applyOutcome(g, 'perfect'); // P3 -> 2
   assert.equal(g.turn, 0);
   assert.equal(g.round, 2);
-  c = Core.applyOutcome(g, 'loud', false); // P1 back to 1
+  c = Core.applyOutcome(g, 'loud'); // P1 back to 1
   assert.equal(c.reset, 'player');
   assert.deepEqual(g.players.map((p) => p.level), [1, 2, 2]);
-  c = Core.applyOutcome(g, 'quiet', false);
+  c = Core.applyOutcome(g, 'quiet');
   assert.deepEqual(g.players.map((p) => p.level), [1, 1, 2]);
-});
-
-test('applyOutcome: team mode resets everybody', () => {
-  const g = Core.newGame(3);
-  g.players[0].level = 5;
-  g.players[1].level = 4;
-  g.players[2].level = 6;
-  g.turn = 1;
-  const c = Core.applyOutcome(g, 'loud', true);
-  assert.equal(c.reset, 'team');
-  assert.deepEqual(g.players.map((p) => p.level), [1, 1, 1]);
-  assert.equal(g.turn, 2);
 });
 
 test('applyOutcome: reaching level 10 wins and ends the game', () => {
   const g = Core.newGame(2);
   g.players[1].level = 9;
   g.turn = 1;
-  const c = Core.applyOutcome(g, 'perfect', false);
+  const c = Core.applyOutcome(g, 'perfect');
   assert.equal(c.won, true);
   assert.equal(g.winner, 1);
   assert.equal(g.players[1].level, 10);
@@ -332,9 +320,9 @@ test('wordList: built-in, my words, or both (empty "my words" falls back)', () =
 });
 
 test('sanitizeSettings: defaults, clamping, bad types', () => {
-  const d = { v: 2, offset: 105, teamMode: false, targetOrder: 'random', difficulty: 'normal', wordSource: 'builtin', customWords: '' };
+  const d = { v: 2, offset: 105, targetOrder: 'random', difficulty: 'normal', wordSource: 'builtin', customWords: '' };
   assert.deepEqual(Core.sanitizeSettings(null), d);
-  const custom = { v: 2, offset: 101.5, teamMode: true, targetOrder: 'ascending', difficulty: 'easy', wordSource: 'both', customWords: 'Hi' };
+  const custom = { v: 2, offset: 101.5, targetOrder: 'ascending', difficulty: 'easy', wordSource: 'both', customWords: 'Hi' };
   assert.deepEqual(Core.sanitizeSettings(custom), custom);
   assert.deepEqual(Core.sanitizeSettings({ v: 2, offset: 999 }), { ...d, offset: 140 });
   assert.deepEqual(Core.sanitizeSettings({ v: 2, offset: -5 }), { ...d, offset: 40 });
@@ -345,7 +333,7 @@ test('sanitizeSettings: defaults, clamping, bad types', () => {
 
 test('settings from version 1: the old +94 default moves to +105, custom offsets stay', () => {
   assert.deepEqual(Core.sanitizeSettings({ offset: 94, teamMode: true, targetOrder: 'descending' }), {
-    v: 2, offset: 105, teamMode: true, targetOrder: 'descending', difficulty: 'normal', wordSource: 'builtin', customWords: '',
+    v: 2, offset: 105, targetOrder: 'descending', difficulty: 'normal', wordSource: 'builtin', customWords: '',
   });
   assert.equal(Core.sanitizeSettings({ offset: 99 }).offset, 99, 'a hand-picked offset is kept');
   assert.equal(Core.sanitizeSettings({ v: 2, offset: 94 }).offset, 94, 'version 2 can choose 94 on purpose');
@@ -353,7 +341,7 @@ test('settings from version 1: the old +94 default moves to +105, custom offsets
 
 test('sanitizeGame: accepts a valid save, rejects anything broken', () => {
   const good = { v: 1, players: [{ name: 'Ann', level: 4 }, { name: 'Bob', level: 1 }], turn: 1, round: 3, winner: null, bag: ['Grandma', 'Pizza'], lastWord: 'Taco' };
-  assert.deepEqual(Core.sanitizeGame(good), { v: 1, players: good.players, turn: 1, round: 3, winner: null, bag: ['Grandma', 'Pizza'], lastWord: 'Taco' });
+  assert.deepEqual(Core.sanitizeGame(good), { v: 1, mode: 'solo', players: good.players, turn: 1, round: 3, winner: null, bag: ['Grandma', 'Pizza'], lastWord: 'Taco' });
   // version 1 saved the bag as indexes into the built-in list
   const old = Core.sanitizeGame({ ...good, bag: [1, 2, 500, -1, 2.5, '', 'x'.repeat(99)], lastWord: undefined });
   assert.deepEqual(old.bag, ['Pickle', 'Noodle']);
@@ -365,4 +353,189 @@ test('sanitizeGame: accepts a valid save, rejects anything broken', () => {
   assert.equal(Core.sanitizeGame({ ...good, players: [{ name: 'A', level: 2.5 }, { name: 'B', level: 1 }] }), null);
   assert.equal(Core.sanitizeGame({ ...good, winner: 7 }), null);
   assert.equal(Core.sanitizeGame({ ...good, winner: 0 }).winner, 0);
+});
+
+/* ---------------- team battle ---------------- */
+
+test('team ladder: always 50 to 115 dB, one limit per player, smaller gaps for bigger teams', () => {
+  assert.deepEqual(Core.teamLadder(2), [50, 115]);
+  assert.deepEqual(Core.teamLadder(3), [50, 85, 115]);
+  assert.deepEqual(Core.teamLadder(5), [50, 65, 85, 100, 115]);
+  assert.deepEqual(Core.teamLadder(6), [50, 65, 75, 90, 100, 115]);
+  assert.deepEqual(Core.teamLadder(10), [50, 55, 65, 70, 80, 85, 95, 100, 110, 115]);
+  let lastGap = Infinity;
+  for (let n = 2; n <= 10; n++) {
+    const l = Core.teamLadder(n);
+    assert.equal(l.length, n);
+    assert.equal(l[0], 50);
+    assert.equal(l[n - 1], 115);
+    for (let i = 1; i < n; i++) assert.ok(l[i] > l[i - 1], n + ': rising ' + l);
+    l.forEach((v) => assert.equal(v % 5, 0));
+    const gap = 65 / (n - 1);
+    assert.ok(gap < lastGap, 'more players, smaller gaps');
+    lastGap = gap;
+  }
+  assert.equal(Core.teamLadder(1).length, 2, 'at least two limits');
+  assert.equal(Core.teamLadder(40).length, 10);
+});
+
+test('newBattle: one or two teams, shared ladder sized by the bigger team', () => {
+  const g = Core.newBattle([{ name: ' Reds ', count: 3, names: ['Ann', '', 'Cat'] }, { count: 2, names: ['Dan'] }]);
+  assert.equal(g.mode, 'team');
+  assert.deepEqual(g.ladder, [50, 85, 115]);
+  assert.deepEqual(g.teams.map((t) => t.name), ['Reds', 'Team 2']);
+  assert.deepEqual(g.teams[0].players, ['Ann', 'Player 2', 'Cat']);
+  assert.deepEqual(g.teams[1].players, ['Dan', 'Player 2']);
+  assert.deepEqual(g.teams[0].scores, [null, null, null]);
+  assert.equal(g.current, 0);
+  assert.equal(g.step, 0);
+  assert.equal(g.finished, false);
+  assert.equal(Core.newBattle([{ count: 1 }]).ladder.length, 2);
+  assert.equal(Core.newBattle([]).teams.length, 1);
+  assert.equal(Core.newBattle([{}, {}, {}]).teams.length, 2);
+});
+
+test('battlePlayer: players take turns, a smaller team wraps around', () => {
+  const g = Core.newBattle([{ count: 3, names: ['A', 'B', 'C'] }, { count: 2, names: ['X', 'Y'] }]);
+  assert.equal(Core.battlePlayer(g), 'A');
+  g.current = 1;
+  g.step = 2;
+  assert.equal(Core.battlePlayer(g), 'X', 'step 3 goes back to the first player');
+});
+
+test('applyBattle: under the limit saves the score and moves up, same word', () => {
+  const g = Core.newBattle([{ count: 3 }, { count: 3 }]);
+  g.teams[0].word = 'Penguin';
+  let c = Core.applyBattle(g, { heard: true, peak: 47.96 });
+  assert.equal(c.kind, 'saved');
+  assert.equal(c.score, 48);
+  assert.deepEqual(g.teams[0].scores, [48, null, null]);
+  assert.equal(g.step, 1);
+  assert.equal(g.teams[0].word, 'Penguin', 'the next player says the same word');
+  c = Core.applyBattle(g, { heard: true, peak: 85.04 });
+  assert.equal(c.kind, 'saved', 'exactly on the limit (shown as 85.0) counts');
+  assert.equal(c.score, 85);
+});
+
+test('applyBattle: over the limit wipes the try, back to step 1 with a new word', () => {
+  const g = Core.newBattle([{ count: 3 }, { count: 3 }]);
+  g.teams[0].word = 'Penguin';
+  Core.applyBattle(g, { heard: true, peak: 49 });
+  const c = Core.applyBattle(g, { heard: true, peak: 85.06 });
+  assert.equal(c.kind, 'bust');
+  assert.equal(c.score, 85.1);
+  assert.deepEqual(g.teams[0].scores, [null, null, null]);
+  assert.equal(g.step, 0);
+  assert.equal(g.teams[0].attempt, 2);
+  assert.equal(g.teams[0].word, null, 'a new word is drawn next turn');
+  assert.equal(g.current, 0, 'still the same team');
+});
+
+test('applyBattle: nothing heard = try again, nothing changes', () => {
+  const g = Core.newBattle([{ count: 2 }]);
+  g.teams[0].word = 'Penguin';
+  const before = JSON.stringify(g);
+  const c = Core.applyBattle(g, { heard: false, peak: 30 });
+  assert.equal(c.kind, 'retry');
+  assert.equal(JSON.stringify(g), before);
+});
+
+test('applyBattle: a finished ladder hands over to the other team, then the game ends', () => {
+  const g = Core.newBattle([{ count: 2 }, { count: 2 }]);
+  Core.applyBattle(g, { heard: true, peak: 48 });
+  let c = Core.applyBattle(g, { heard: true, peak: 100 });
+  assert.equal(c.teamDone, true);
+  assert.equal(c.nextTeam, 1);
+  assert.equal(g.current, 1);
+  assert.equal(g.step, 0);
+  assert.equal(g.teams[0].done, true);
+  Core.applyBattle(g, { heard: true, peak: 49 });
+  c = Core.applyBattle(g, { heard: true, peak: 99 });
+  assert.equal(c.finished, true);
+  assert.equal(g.finished, true);
+  assert.equal(Core.isGameOver(g), true);
+  // one team only: done after its own ladder
+  const solo = Core.newBattle([{ count: 2 }]);
+  Core.applyBattle(solo, { heard: true, peak: 40 });
+  assert.equal(Core.applyBattle(solo, { heard: true, peak: 90 }).finished, true);
+});
+
+test('compareBattle: closest per limit wins it, most limits wins, then closest overall', () => {
+  const g = Core.newBattle([{ count: 3 }, { count: 3 }]);
+  g.teams[0].scores = [49, 84, 100];
+  g.teams[1].scores = [47, 84.5, 101];
+  g.teams.forEach((t) => (t.done = true));
+  let r = Core.compareBattle(g);
+  assert.deepEqual(r.rows.map((x) => x.winner), [0, 1, 1]);
+  assert.deepEqual(r.wins, [1, 2]);
+  assert.equal(r.winner, 1);
+  assert.equal(r.reason, 'limits');
+  assert.deepEqual(r.under, [17, 17.5]);
+  // a draw on one limit, level on limits -> closest overall decides
+  g.teams[0].scores = [49, 84, 100]; // 17 dB under in total
+  g.teams[1].scores = [49, 82, 101]; // 18 dB under in total
+  r = Core.compareBattle(g);
+  assert.deepEqual(r.rows.map((x) => x.winner), [null, 0, 1]);
+  assert.deepEqual(r.wins, [1, 1]);
+  assert.equal(r.winner, 0);
+  assert.equal(r.reason, 'closer');
+  // complete tie
+  g.teams[1].scores = [49, 84, 100];
+  r = Core.compareBattle(g);
+  assert.equal(r.winner, null);
+  assert.equal(r.reason, 'tie');
+  // unfinished or single team: no winner yet
+  g.teams[1].done = false;
+  assert.equal(Core.compareBattle(g).winner, null);
+  const one = Core.newBattle([{ count: 2 }]);
+  one.teams[0].scores = [48, 100];
+  one.teams[0].done = true;
+  assert.deepEqual(Core.compareBattle(one).under, [17]);
+  assert.equal(Core.compareBattle(one).winner, null);
+});
+
+test('rateCloseness: how close to the limit', () => {
+  assert.equal(Core.rateCloseness(0), 'amazing');
+  assert.equal(Core.rateCloseness(1), 'amazing');
+  assert.equal(Core.rateCloseness(2.5), 'great');
+  assert.equal(Core.rateCloseness(5), 'nice');
+  assert.equal(Core.rateCloseness(12), 'safe');
+});
+
+test('sanitizeGame: team battles round-trip; broken ones are rejected', () => {
+  const g = Core.newBattle([{ name: 'Reds', count: 3 }, { name: 'Blues', count: 2 }]);
+  g.teams[0].word = 'Penguin';
+  Core.applyBattle(g, { heard: true, peak: 48 });
+  const copy = Core.sanitizeGame(JSON.parse(JSON.stringify(g)));
+  assert.deepEqual(copy, g);
+  const broken = (fn) => {
+    const x = JSON.parse(JSON.stringify(g));
+    fn(x);
+    return Core.sanitizeGame(x);
+  };
+  assert.equal(broken((x) => (x.teams = [])), null);
+  assert.equal(broken((x) => (x.current = 2)), null);
+  assert.equal(broken((x) => (x.step = 3)), null);
+  assert.equal(broken((x) => (x.teams[0].scores = [48])), null);
+  assert.equal(broken((x) => (x.teams[0].scores[0] = 60)), null, 'a score above its limit');
+  assert.equal(broken((x) => (x.teams[1].done = true)), null, 'done with missing scores');
+  assert.equal(broken((x) => (x.teams[0].players = [])), null);
+  assert.equal(broken((x) => (x.teams[0].word = 5)).teams[0].word, null);
+  assert.equal(Core.isGameOver(copy), false);
+});
+
+test('sanitizeSetup: remembers mode, teams and names safely', () => {
+  const d = Core.sanitizeSetup(null);
+  assert.equal(d.mode, 'solo');
+  assert.equal(d.teamCount, 2);
+  assert.deepEqual(d.solo, { count: 3, names: [] });
+  assert.equal(d.teams.length, 2);
+  const s = Core.sanitizeSetup({ mode: 'team', teamCount: 1, solo: { count: 40, names: ['A', 5] }, teams: [{ name: 'Reds', count: 0, names: ['x'.repeat(30)] }] });
+  assert.equal(s.mode, 'team');
+  assert.equal(s.teamCount, 1);
+  assert.deepEqual(s.solo, { count: 10, names: ['A', ''] });
+  assert.equal(s.teams[0].name, 'Reds');
+  assert.equal(s.teams[0].count, 1);
+  assert.equal(s.teams[0].names[0].length, 16);
+  assert.deepEqual(s.teams[1], { name: '', count: 3, names: [] });
 });

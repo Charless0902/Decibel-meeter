@@ -57,15 +57,15 @@ Phones measure **dBFS** (relative to the loudest sound the mic can record), not 
 - Or drag the slider / use **−/+**.
 
 ### The game
-1. Choose 2–10 players (names optional) and tap **Start game**.
-2. Pass the phone. The player taps **I'm ready** and everyone stays quiet for **1 second** while the room noise is measured.
-3. A word and a target appear (e.g. *say PICKLE at 72 dB*). Tap **GO!** and say it.
-4. The app detects when you start and stop talking and records the **peak** of the word.
-5. **Perfect!** if the peak is within the window just **below** the target (e.g. on Normal, level 1: target − 5 dB up to the target). Over the target is **Too loud!**, below the window is **Too quiet!**.
-6. A hit moves you up a level. A miss sends you back to level 1 (and the phone vibrates, on phones that support it).
-7. The window shrinks as you climb. First to **level 10** wins!
+On the setup screen, pick **👤 Solo** or **👥 Team battle**. Every turn starts the same way: the player taps **I'm ready**, everyone stays quiet for **1 second** while the room noise is measured, then a word and a number appear. Tap **GO!** and say the word; the app detects when you start and stop talking and records the **peak** of the word.
 
-Options (on the game setup screen, and the same ones in Settings):
+#### 👤 Solo (2–10 players)
+1. A word and a target appear (e.g. *say PICKLE at 72 dB*).
+2. **Perfect!** if the peak lands in the window just **below** the target (e.g. on Normal, level 1: target − 5 dB up to the target). Over the target is **Too loud!**, below the window is **Too quiet!**.
+3. A hit moves you up a level. A miss sends you back to level 1 (and the phone vibrates, on phones that support it).
+4. The window shrinks as you climb. First to **level 10** wins!
+
+Solo options (on the setup screen, and the same ones in Settings):
 - **Difficulty** (the hit window for levels 1–3 / 4–6 / 7–9):
 
   | | Levels 1–3 | 4–6 | 7–9 |
@@ -79,10 +79,33 @@ Options (on the game setup screen, and the same ones in Settings):
   - **📉 Loud → soft:** level 1 aims at 85 dB, then 81, 76, 72, 68, 63, 59, 54, down to 50 dB at level 9.
   - **📈 Soft → loud:** the same ladder upwards: 50 dB at level 1 up to 85 dB at level 9.
   - On the ladders, a miss puts you back at the start (85 or 50 dB).
-- **Words:** **📚 Built-in** (100 words), **✏️ My words** (type your own, one per line or separated by commas: names, inside jokes, short phrases) or **🔀 Both**. Words never repeat until the whole list has been used.
-- **Team mode:** any miss sends *everyone* back to level 1.
 
-In a noisy room, targets too quiet to tell apart from the background are raised automatically (the screen says so). A game in progress is saved, so you can continue after closing the app.
+In a noisy room, Solo targets too quiet to tell apart from the background are raised automatically (the screen says so).
+
+#### 👥 Team battle
+- **The ladder:** limits always go from **50 dB** to **115 dB**, one step per player, so more players means smaller jumps:
+
+  | Players | Limits (dB) |
+  | --- | --- |
+  | 2 | 50 → 115 |
+  | 3 | 50 → 85 → 115 |
+  | 4 | 50 → 70 → 95 → 115 |
+  | 5 | 50 → 65 → 85 → 100 → 115 |
+  | 6 | 50 → 65 → 75 → 90 → 100 → 115 |
+  | 8 | 50 → 60 → 70 → 80 → 85 → 95 → 105 → 115 |
+  | 10 | 50 → 55 → 65 → 70 → 80 → 85 → 95 → 100 → 110 → 115 |
+
+  If the teams are different sizes, the ladder follows the bigger team and the smaller team's players take extra turns.
+- **A turn:** the player says the team's word and tries to get **as close as possible to the limit without going over**. The score is saved (e.g. *58.2 at the 60 dB limit*) and the **next player says the same word** at the next limit.
+- **Too loud:** going over a limit sends the team **back to step 1 with a new word**, and the scores from that try are wiped.
+- **Didn't hear you:** the same player simply tries again.
+- **Both teams on one phone:** Team 1 climbs the whole ladder, then Team 2. At each limit, the team that got closer wins it. **Most limits wins**; if that's a draw, the team that was closer overall (fewest dB under in total) wins.
+- **One team per phone:** each phone shows its own score table at the end; compare them limit by limit.
+- **Top of the ladder:** a phone can only measure up to about its calibration offset minus 3 dB (about 102 dB at the default +105). Limits above that are marked red on the setup screen and say *scream as loud as you can*: you can't go over them, so the loudest team wins those.
+
+#### Both modes
+- **Words:** **📚 Built-in** (100 words), **✏️ My words** (type your own, one per line or separated by commas: names, inside jokes, short phrases) or **🔀 Both**. Words never repeat until the whole list has been used.
+- A game in progress is saved, so you can continue after closing the app. Team names and player names are remembered for next time.
 
 ## How it works
 
@@ -117,7 +140,7 @@ npm test             # unit tests + end-to-end tests in headless Chromium
 
 `localhost` counts as secure, so the mic works there on a computer. For a phone you need the HTTPS GitHub Pages link.
 
-The end-to-end tests drive the real app in headless Chromium with a simulated microphone (a tone at known volumes). They cover the meter's accuracy, zones, stats, graph and wake lock; calibration (slider, Match, voice calibration, moving old settings to the new default) and saved settings; offline loading under the GitHub Pages sub-path; and full games: perfect / too loud / too quiet / silence, team mode, both target ladders, difficulty windows, your own words, resuming, winning and noisy rooms. One test plays a WAV of known level through Chromium's fake microphone device to check the raw-audio constraints end to end.
+The end-to-end tests drive the real app in headless Chromium with a simulated microphone (a tone at known volumes). They cover the meter's accuracy, zones, stats, graph and wake lock; calibration (slider, Match, voice calibration, moving old settings to the new default) and saved settings; offline loading under the GitHub Pages sub-path; and full games: Solo (perfect / too loud / too quiet / silence, both target ladders, difficulty windows, your own words, resuming, winning, noisy rooms) and Team battle (same word up the ladder, going over restarts with a new word, retry, handover between teams, resuming mid-battle, the final comparison, one team per phone). One test plays a WAV of known level through Chromium's fake microphone device to check the raw-audio constraints end to end.
 
 ## Notes
 

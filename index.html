@@ -120,6 +120,22 @@
           </div>
 
           <div class="card">
+            <h2 class="card-title">Game mode</h2>
+            <div class="segmented seg-stack" role="radiogroup" aria-label="Game mode">
+              <label><input type="radio" name="gameMode" value="solo"><span><i aria-hidden="true">👤</i>Solo<small>first to level 10</small></span></label>
+              <label><input type="radio" name="gameMode" value="team"><span><i aria-hidden="true">👥</i>Team battle<small>50 → 115 dB ladder</small></span></label>
+            </div>
+            <p class="help" id="modeHelp"></p>
+            <div class="option-block" id="teamCountBlock" role="radiogroup" aria-label="Teams on this phone" hidden>
+              <span class="toggle-title">Teams on this phone</span>
+              <div class="segmented seg-stack">
+                <label><input type="radio" name="teamCount" value="2"><span><i aria-hidden="true">⚔️</i>Both teams<small>one after the other</small></span></label>
+                <label><input type="radio" name="teamCount" value="1"><span><i aria-hidden="true">📱</i>Just us<small>other team on their phone</small></span></label>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="soloPlayersCard">
             <h2 class="card-title">Players</h2>
             <div class="stepper">
               <button type="button" class="btn-round" id="pcMinus" aria-label="Fewer players">−</button>
@@ -128,6 +144,32 @@
             </div>
             <div class="name-list" id="nameList"></div>
             <p class="help">Names are optional.</p>
+          </div>
+
+          <div class="card team-card" id="teamCard0" data-team="0" hidden>
+            <input type="text" class="team-name" id="teamName0" maxlength="16" placeholder="Team 1" autocomplete="off" aria-label="Name of team 1">
+            <div class="stepper">
+              <button type="button" class="btn-round" id="t0Minus" aria-label="Fewer players in team 1">−</button>
+              <output id="t0Count" aria-live="polite">3</output>
+              <button type="button" class="btn-round" id="t0Plus" aria-label="More players in team 1">+</button>
+            </div>
+            <div class="name-list" id="t0Names"></div>
+          </div>
+
+          <div class="card team-card" id="teamCard1" data-team="1" hidden>
+            <input type="text" class="team-name" id="teamName1" maxlength="16" placeholder="Team 2" autocomplete="off" aria-label="Name of team 2">
+            <div class="stepper">
+              <button type="button" class="btn-round" id="t1Minus" aria-label="Fewer players in team 2">−</button>
+              <output id="t1Count" aria-live="polite">3</output>
+              <button type="button" class="btn-round" id="t1Plus" aria-label="More players in team 2">+</button>
+            </div>
+            <div class="name-list" id="t1Names"></div>
+          </div>
+
+          <div class="card ladder-card" id="ladderCard" hidden>
+            <h2 class="card-title">🪜 The ladder</h2>
+            <p class="ladder-steps" id="ladderPreview"></p>
+            <p class="help" id="ladderHelp"></p>
           </div>
 
           <div class="card">
@@ -139,26 +181,38 @@
 
           <details class="card how">
             <summary>How to play</summary>
+            <h3>👤 Solo</h3>
             <ol>
               <li>Pass the phone. On your turn, tap <b>I'm ready</b>. Everyone hushes for 1 second while the room is measured.</li>
               <li>You get a word and a target in dB. Tap <b>GO</b> and say the word.</li>
               <li>Your loudest moment has to land in the window just <b>under</b> the target. Over the line is <i>too loud</i>; under the window is <i>too quiet</i>.</li>
-              <li>Hit it to level up. Miss and you're back to level 1 (in Team mode, everyone is).</li>
+              <li>Hit it to level up. Miss and you're back to level 1.</li>
               <li>The window shrinks as you climb. On <b>Normal</b> it's 5 dB (levels 1–3), 4 dB (4–6), then 3 dB (7–9); <b>Easy</b> and <b>Hard</b> make it wider or tighter. First to <b>level 10</b> wins!</li>
-              <li>Targets are random (50–85 dB), or go <b>Loud → soft</b> (85 down to 50 dB) or <b>Soft → loud</b> (50 up to 85 dB), one step per level. A miss puts you back at the start of the ladder.</li>
-              <li>Pick <b>My words</b> to play with your own words: inside jokes, names, anything.</li>
+              <li>Targets are random (50–85 dB), or go <b>Loud → soft</b> (85 down to 50 dB) or <b>Soft → loud</b> (50 up to 85 dB), one step per level.</li>
             </ol>
+            <h3>👥 Team battle</h3>
+            <ol>
+              <li>The ladder of limits always goes from <b>50 dB</b> up to <b>115 dB</b>, one step per player. More players means smaller steps.</li>
+              <li>Player 1 says the team's word and tries to get <b>as close as possible to the limit without going over</b>. That score is saved, and the next player says the <b>same word</b> at the next limit.</li>
+              <li>Go over a limit and your team <b>starts again at step 1 with a new word</b> (the scores from that try are wiped).</li>
+              <li>Both teams on one phone: Team 1 climbs the whole ladder, then Team 2. At each limit, the team that got closer wins it. <b>Most limits wins</b> (if that's a draw, the team that was closer overall wins).</li>
+              <li>One team per phone: compare your score tables at the end.</li>
+            </ol>
+            <p class="help">Pick <b>My words</b> to play with your own words: inside jokes, names, anything.</p>
           </details>
         </div>
 
         <!-- Pass the phone -->
         <div class="screen center" data-screen="pass" hidden>
+          <p class="team-tag" id="passTeam" hidden></p>
           <p class="kicker">Pass the phone to</p>
           <h1 class="big-name" id="passName">Player</h1>
-          <div class="level-badge">Level <b id="passLevel">1</b><span>/10</span></div>
+          <div class="level-badge"><span id="passBadgeLabel">Level </span><b id="passLevel">1</b><span id="passBadgeSuffix">/10</span></div>
           <div class="pips pips-lg" id="passPips" aria-hidden="true"></div>
-          <p class="muted">Your window: <b id="passWindow">5</b> dB under the target</p>
+          <p class="muted" id="passSoloRule">Your window: <b id="passWindow">5</b> dB under the target</p>
+          <p class="muted" id="passBattleRule" hidden>Get as close as you can to <b id="passLimit">50</b> dB without going over.</p>
           <p class="pass-target" id="passTarget" hidden><span id="passTargetIcon">📉</span> Target at this level: <b id="passTargetValue">85</b> dB</p>
+          <p class="pass-target" id="passWord" hidden></p>
           <button type="button" class="btn btn-primary btn-wide btn-xl" id="readyBtn">I'm ready</button>
           <p class="help">After you tap, everyone stays quiet for one second.</p>
           <p class="error" id="gameError" role="alert" hidden></p>
@@ -174,12 +228,15 @@
 
         <!-- Word + target -->
         <div class="screen center" data-screen="reveal" hidden>
-          <p class="kicker"><span id="revealName">Player</span> · level <span id="revealLevel">1</span></p>
+          <p class="kicker" id="revealKicker">Player · level 1</p>
           <p class="say">Say</p>
           <h1 class="word" id="revealWord">Banana</h1>
-          <p class="say">at</p>
+          <p class="say" id="revealAt">at</p>
           <div class="target"><span id="revealTarget">70</span><small>dB</small></div>
-          <p class="range-chip">Hit <b id="revealRange">67–70 dB</b>, not higher!</p>
+          <p class="range-chip" id="revealChipSolo">Hit <b id="revealRange">67–70 dB</b>, not higher!</p>
+          <p class="range-chip" id="revealChipBattle" hidden>Get close, but don't go over!</p>
+          <p class="note-chip" id="revealMax" hidden></p>
+          <p class="note-chip" id="revealNoisy" hidden></p>
           <button type="button" class="btn-go" id="goBtn">GO!</button>
           <p class="help">Room noise: <span id="revealRoom">--</span> dB<span id="revealRaised" hidden> · noisy room, so the target was raised</span></p>
         </div>
@@ -202,18 +259,19 @@
             </div>
             <div class="listen-readout">
               <div class="live-db"><span id="listenValue">--</span><small>dB</small></div>
-              <p class="muted">Target <b id="listenTarget">67–70</b></p>
+              <p class="muted" id="listenTargetLine">Target <b id="listenTarget">67–70</b></p>
             </div>
           </div>
         </div>
 
         <!-- Result -->
         <div class="screen center" data-screen="result" data-outcome="perfect" hidden>
+          <p class="team-tag" id="resultTeam" hidden></p>
           <div class="result-emoji" id="resultEmoji" aria-hidden="true">🎯</div>
           <h1 class="verdict" id="resultVerdict" aria-live="assertive">Perfect!</h1>
           <div class="result-figures">
             <div><small>Your peak</small><b id="resultPeak">--</b></div>
-            <div><small>Target</small><b id="resultTarget">--</b></div>
+            <div><small id="resultTargetLabel">Target</small><b id="resultTarget">--</b></div>
           </div>
           <div class="strip" aria-hidden="true">
             <div class="strip-window" id="stripWindow"></div>
@@ -225,15 +283,17 @@
           <p class="level-change" id="resultLevel"></p>
           <button type="button" class="btn btn-primary btn-wide btn-xl" id="nextBtn">Next →</button>
           <ol class="scoreboard" id="resultScores"></ol>
+          <div class="battle-wrap" id="resultBattle" hidden></div>
         </div>
 
         <!-- Winner -->
         <div class="screen center" data-screen="win" hidden>
-          <div class="trophy" aria-hidden="true">🏆</div>
-          <h1 class="big-name"><span id="winName">Player</span> wins!</h1>
+          <div class="trophy" id="winTrophy" aria-hidden="true">🏆</div>
+          <h1 class="big-name"><span id="winName">Player</span><span id="winSuffix"> wins!</span></h1>
           <p class="muted" id="winMsg"></p>
           <p class="help" id="winLast"></p>
           <ol class="scoreboard" id="winScores"></ol>
+          <div class="battle-wrap" id="winBattle" hidden></div>
           <div class="row">
             <button type="button" class="btn btn-primary" id="rematchBtn">🔁 Rematch</button>
             <button type="button" class="btn btn-ghost" id="newPlayersBtn">New players</button>
@@ -327,15 +387,8 @@
 
   <!-- Game options: cloned into the game setup screen and into Settings -->
   <template id="gameOptionsTpl">
-    <label class="toggle-row">
-      <span>
-        <span class="toggle-title">Team mode</span>
-        <span class="help">Any miss sends <b>everyone</b> back to level 1 instead of just that player.</span>
-      </span>
-      <span class="switch"><input type="checkbox" data-setting="teamMode" aria-label="Team mode"><span class="slider" aria-hidden="true"></span></span>
-    </label>
-    <div class="option-block" role="radiogroup" aria-label="Difficulty">
-      <span class="toggle-title">Difficulty</span>
+    <div class="option-block first" role="radiogroup" aria-label="Difficulty" data-solo-only>
+      <span class="toggle-title">Difficulty <span class="tag">Solo</span></span>
       <div class="segmented seg-3">
         <label><input type="radio" data-setting="difficulty" value="easy"><span><i aria-hidden="true">😌</i>Easy<small>8 → 4 dB</small></span></label>
         <label><input type="radio" data-setting="difficulty" value="normal"><span><i aria-hidden="true">🙂</i>Normal<small>5 → 3 dB</small></span></label>
@@ -343,8 +396,8 @@
       </div>
       <span class="help">How far under the target you're allowed to land. The window shrinks as you level up.</span>
     </div>
-    <div class="option-block" role="radiogroup" aria-label="Target order">
-      <span class="toggle-title">Target order</span>
+    <div class="option-block" role="radiogroup" aria-label="Target order" data-solo-only>
+      <span class="toggle-title">Target order <span class="tag">Solo</span></span>
       <div class="segmented seg-3">
         <label><input type="radio" data-setting="targetOrder" value="random"><span><i aria-hidden="true">🎲</i>Random<small>50–85 dB</small></span></label>
         <label><input type="radio" data-setting="targetOrder" value="descending"><span><i aria-hidden="true">📉</i>Loud → soft<small>85 → 50 dB</small></span></label>
@@ -370,6 +423,7 @@
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="scoresTitle">
       <h2 class="card-title" id="scoresTitle">Scoreboard</h2>
       <ol class="scoreboard" id="scoresList"></ol>
+      <div class="battle-wrap" id="scoresBattle" hidden></div>
       <button type="button" class="btn btn-primary btn-wide" id="scoresClose">Close</button>
     </div>
   </div>

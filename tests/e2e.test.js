@@ -141,14 +141,13 @@ async function playTurn(page, aim) {
   return { target, win, word, aimed: db, live };
 }
 
-async function startGame(page, names, team) {
+async function startGame(page, names) {
   await page.click('.tab[data-tab="game"]');
   const count = names.length;
   while (parseInt(await text(page, '#playerCount'), 10) > count) await page.click('#pcMinus');
   while (parseInt(await text(page, '#playerCount'), 10) < count) await page.click('#pcPlus');
   const inputs = await page.$$('#nameList input');
   for (let i = 0; i < count; i++) await inputs[i].fill(names[i]);
-  if (team) await page.check('#setupOptions [data-setting="teamMode"]');
   await page.click('#startGame');
   await page.waitForSelector(visible('pass'));
 }
@@ -395,18 +394,14 @@ test('settings: calibration offset shifts readings, reference match works, all s
   assert.equal(await text(page, '#offsetValue'), '+110 dB');
   near(parseFloat(await text(page, '#calReading')), 65, 0.3, 'reading after match');
 
-  await page.check('#settingsOptions [data-setting="teamMode"]');
   await page.click('#settingsOptions [data-setting="difficulty"][value="easy"]');
   await page.reload();
   await page.click('.tab[data-tab="settings"]');
   assert.equal(await text(page, '#offsetValue'), '+110 dB');
   assert.equal(await page.inputValue('#offset'), '110');
-  assert.equal(await page.isChecked('#settingsOptions [data-setting="teamMode"]'), true);
   assert.equal(await page.isChecked('#settingsOptions [data-setting="difficulty"][value="easy"]'), true);
   await page.click('.tab[data-tab="game"]');
-  assert.equal(await page.isChecked('#setupOptions [data-setting="teamMode"]'), true, 'setup toggle mirrors the setting');
-  assert.equal(await page.isChecked('#setupOptions [data-setting="difficulty"][value="easy"]'), true);
-  assert.equal(await text(page, '#gameMode'), 'Team');
+  assert.equal(await page.isChecked('#setupOptions [data-setting="difficulty"][value="easy"]'), true, 'setup mirrors the setting');
 
   await page.click('.tab[data-tab="settings"]');
   assert.equal(await text(page, '#offsetReset'), 'Reset to +105');
@@ -483,23 +478,6 @@ test('game: perfect levels up; too loud / too quiet / silence fail, reset and vi
   assert.equal(await text(page, '#resultVerdict'), 'Too quiet!');
   assert.match(await text(page, '#resultDelta'), /didn't hear anything/);
   assert.equal(await page.evaluate(() => window.__mic.vibrations.length), 3);
-  assert.deepEqual(errors, []);
-  await context.close();
-});
-
-test('game: team mode sends everyone back to level 1', { skip }, async () => {
-  const { page, context, errors } = await openApp();
-  await startGame(page, ['Ann', 'Bob', 'Cat'], true);
-  assert.equal(await text(page, '#gameMode'), 'Team');
-  await playTurn(page, (t, w) => t - w / 2);
-  await page.click('#nextBtn');
-  await playTurn(page, (t, w) => t - w / 2);
-  assert.deepEqual(await levels(page), [2, 2, 1]);
-  await page.click('#nextBtn');
-  await playTurn(page, (t) => t + 4);
-  assert.equal(await text(page, '#resultVerdict'), 'Too loud!');
-  assert.match(await text(page, '#resultLevel'), /everyone goes back to level 1/);
-  assert.deepEqual(await levels(page), [1, 1, 1]);
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -711,12 +689,178 @@ test('settings: calibrate with your voice sets normal talking to 60 dB', { skip 
 
 test('settings: an untouched +94 from version 1 moves to the new default', { skip }, async () => {
   const { page, context, errors } = await openApp();
-  await page.evaluate(() => localStorage.setItem('loudEnough.settings.v1', JSON.stringify({ offset: 94, teamMode: true, targetOrder: 'descending' })));
+  await page.evaluate(() => localStorage.setItem('loudEnough.settings.v1', JSON.stringify({ offset: 94, targetOrder: 'descending' })));
   await page.reload();
   await page.click('.tab[data-tab="settings"]');
   assert.equal(await text(page, '#offsetValue'), '+105 dB');
-  assert.equal(await page.isChecked('#settingsOptions [data-setting="teamMode"]'), true);
   assert.equal(await page.isChecked('#settingsOptions [data-setting="targetOrder"][value="descending"]'), true);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+/* ------------------------------------------------------------------ */
+/* team battle                                                         */
+/* ------------------------------------------------------------------ */
+
+// One team-battle turn. `aim(limit)` returns the dB to say the word at (null = silence).
+async function playBattleTurn(page, aim) {
+  await page.click('#readyBtn');
+  await page.waitForSelector(visible('reveal'), { timeout: 5000 });
+  const limit = parseInt(await text(page, '#revealTarget'), 10);
+  const word = await text(page, '#revealWord');
+  const maxNote = await page.isVisible('#revealMax');
+  await page.click('#goBtn');
+  await page.waitForSelector(visible('listen'));
+  const db = aim(limit);
+  await page.waitForTimeout(400);
+  if (db !== null) {
+    await setLevel(page, db);
+    await page.waitForTimeout(750);
+    await setLevel(page, null);
+  }
+  await page.waitForSelector(visible('result'), { timeout: 12000 });
+  return { limit, word, maxNote, verdict: await text(page, '#resultVerdict') };
+}
+
+async function setupBattle(page, teams, teamCount) {
+  await page.click('.tab[data-tab="game"]');
+  await page.click('input[name="gameMode"][value="team"]');
+  await page.click(`input[name="teamCount"][value="${teamCount}"]`);
+  for (let t = 0; t < teams.length; t++) {
+    await page.fill('#teamName' + t, teams[t].name);
+    while (parseInt(await text(page, `#t${t}Count`), 10) > teams[t].players.length) await page.click(`#t${t}Minus`);
+    while (parseInt(await text(page, `#t${t}Count`), 10) < teams[t].players.length) await page.click(`#t${t}Plus`);
+    const inputs = await page.$$(`#t${t}Names input`);
+    for (let i = 0; i < teams[t].players.length; i++) await inputs[i].fill(teams[t].players[i]);
+  }
+}
+
+const tableRows = (page, sel) =>
+  page.$$eval(sel + ' tbody tr', (rows) => rows.map((r) => Array.from(r.cells).map((c) => c.textContent.trim())));
+
+test('team battle on one phone: same word up the ladder, over = restart with a new word, closest wins', { skip }, async () => {
+  const { page, context, errors } = await openApp();
+  await setupBattle(page, [{ name: 'Reds', players: ['Ann', 'Bob', 'Cat'] }, { name: 'Blues', players: ['Dan', 'Eve', 'Fay'] }], 2);
+  assert.equal(await page.isVisible('#soloPlayersCard'), false);
+  assert.equal(await page.isVisible('#setupOptions [data-setting="difficulty"][value="easy"]'), false, 'solo-only options hidden');
+  assert.equal(await text(page, '#ladderPreview'), '50 → 85 → 115 dB');
+  assert.equal(await text(page, '#startGame'), 'Start team battle ⚔️');
+  await page.click('#startGame');
+  await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passTeam'), 'Reds · step 1 of 3');
+  assert.equal(await text(page, '#passName'), 'Ann');
+  assert.equal(await text(page, '#passLevel'), '50');
+  assert.equal(await text(page, '#passWord'), '🆕 New word coming up!');
+  assert.equal(await text(page, '#gameRound'), 'Reds');
+  assert.equal(await text(page, '#gameMode'), 'Try 1');
+
+  // Ann: 2 dB under the 50 limit -> saved
+  let turn = await playBattleTurn(page, (limit) => limit - 2);
+  assert.equal(turn.limit, 50);
+  const firstWord = turn.word;
+  assert.equal(turn.verdict, 'Great!');
+  assert.match(await text(page, '#resultLevel'), /Saved: 48\.\d for Reds at the 50 dB limit/);
+  assert.equal(await text(page, '#nextBtn'), 'Next: Bob →');
+
+  // Bob: same word, goes over the 85 limit -> Reds start again with a new word
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#passWord'), '🔁 Same word: ' + firstWord);
+  turn = await playBattleTurn(page, (limit) => limit + 2);
+  assert.equal(turn.limit, 85);
+  assert.equal(turn.word, firstWord);
+  assert.equal(turn.verdict, 'Too loud!');
+  assert.match(await text(page, '#resultLevel'), /Reds starts again at step 1 with a new word/);
+  assert.equal(await text(page, '#nextBtn'), 'Start again: Ann →');
+  assert.equal(await page.evaluate(() => window.__mic.vibrations.length), 1);
+  assert.deepEqual((await tableRows(page, '#resultBattle')).map((r) => r[1]), ['👉', '—', '—'], 'the try was wiped');
+
+  // Ann again: new word, 1 dB under
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#gameMode'), 'Try 2');
+  turn = await playBattleTurn(page, (limit) => limit - 1);
+  const secondWord = turn.word;
+  assert.notEqual(secondWord, firstWord);
+  assert.equal(turn.verdict, 'Amazing!');
+
+  // Bob says nothing -> tries again, same word and limit
+  await page.click('#nextBtn');
+  turn = await playBattleTurn(page, () => null);
+  assert.equal(turn.verdict, "Didn't hear you!");
+  assert.equal(await text(page, '#nextBtn'), 'Try again →');
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#passName'), 'Bob');
+  turn = await playBattleTurn(page, (limit) => limit - 1);
+  assert.equal(turn.limit, 85);
+  assert.equal(turn.word, secondWord);
+
+  // Cat: 115 is above what the phone can measure (~102 dB): scream!
+  await page.click('#nextBtn');
+  turn = await playBattleTurn(page, () => 100);
+  assert.equal(turn.limit, 115);
+  assert.equal(turn.maxNote, true, 'the "scream as loud as you can" note shows');
+  assert.match(await text(page, '#resultLevel'), /Ladder complete/);
+  assert.equal(await text(page, '#nextBtn'), "Blues's turn →");
+
+  // the battle survives a reload
+  await page.reload();
+  await page.click('.tab[data-tab="game"]');
+  assert.match(await text(page, '#resumeInfo'), /Team battle · Reds vs Blues · Blues on step 1 of 3/);
+  await page.click('#continueBtn');
+  await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passTeam'), 'Blues · step 1 of 3');
+  assert.equal(await text(page, '#passName'), 'Dan');
+
+  for (const db of [47, 84.5, 101]) {
+    turn = await playBattleTurn(page, () => db);
+    assert.notEqual(turn.verdict, 'Too loud!');
+    await page.click('#nextBtn');
+  }
+  await page.waitForSelector(visible('win'));
+  assert.equal(await text(page, '#winName'), 'Blues');
+  assert.equal(await text(page, '#winSuffix'), 'wins!');
+  assert.equal(await text(page, '#winMsg'), 'Closest at 2 of 3 limits (Reds: 1).');
+  const rows = await tableRows(page, '#winBattle');
+  assert.deepEqual(rows.map((r) => r[0]), ['50 dB', '85 dB', '115 dB']);
+  assert.match(rows[0][1], /^49\.\d 🏆$/);
+  assert.match(rows[1][2], /^84\.\d 🏆$/);
+  assert.match(rows[2][2], /^10[01]\.\d 🏆$/);
+  assert.deepEqual(await page.$$eval('#winBattle tfoot td', (c) => c.map((x) => x.textContent)), ['1', '2']);
+
+  await page.reload();
+  await page.click('.tab[data-tab="game"]');
+  assert.equal(await page.isVisible('#resumeCard'), false, 'a finished battle is not offered again');
+  assert.equal(await page.isChecked('input[name="gameMode"][value="team"]'), true, 'setup remembered');
+  assert.equal(await page.inputValue('#teamName1'), 'Blues');
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('team battle with one team per phone: own score table to compare', { skip }, async () => {
+  const { page, context, errors } = await openApp();
+  await setupBattle(page, [{ name: 'Us', players: ['Ann', 'Bob'] }], 1);
+  assert.equal(await page.isVisible('#teamCard1'), false);
+  assert.equal(await text(page, '#ladderPreview'), '50 → 115 dB');
+  assert.equal(await page.$eval('#ladderPreview span:last-child', (el) => el.className), 'top', '115 is above what the phone can measure');
+  await page.click('#startGame');
+  await page.waitForSelector(visible('pass'));
+  let turn = await playBattleTurn(page, () => 48);
+  assert.equal(turn.verdict, 'Great!');
+  await page.click('#nextBtn');
+  turn = await playBattleTurn(page, () => 100);
+  assert.equal(await text(page, '#nextBtn'), 'See the results 🏆');
+  await page.click('#nextBtn');
+  await page.waitForSelector(visible('win'));
+  assert.equal(await text(page, '#winName'), 'Us');
+  assert.equal(await text(page, '#winSuffix'), 'finished!');
+  assert.match(await text(page, '#winMsg'), /All 2 limits done, 1[67]\.\d dB under in total/);
+  assert.equal((await page.$$('#winBattle thead th')).length, 2, 'one team column');
+  assert.match(await page.$eval('#winBattle tfoot', (el) => el.textContent), /Total under/);
+
+  // rematch keeps the team
+  await page.click('#rematchBtn');
+  await page.waitForSelector(visible('pass'));
+  assert.equal(await text(page, '#passTeam'), 'Us · step 1 of 2');
+  assert.equal(await text(page, '#gameMode'), 'Try 1');
   assert.deepEqual(errors, []);
   await context.close();
 });

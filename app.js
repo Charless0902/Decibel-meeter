@@ -8,7 +8,7 @@
 (function (root) {
   'use strict';
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
 
   /* =====================================================================
    * Core: pure, testable logic
@@ -36,6 +36,12 @@
       normal: [5, 4, 3],
       hard: [3, 2, 1],
     };
+
+    // Team battle: every team climbs the same ladder of limits, from 50 up to
+    // 115 dB, one step per player (the bigger team sets the number of steps, so
+    // more players means smaller jumps). Closest to each limit without going
+    // over wins that limit.
+    const TEAM = { start: 50, end: 115, maxTeams: 2, minPlayers: 1, maxPlayers: 10, sweetSpot: 3 };
 
     const WORD_SOURCES = ['builtin', 'custom', 'both'];
     const CUSTOM_WORDS = { maxWords: 300, maxLength: 24, maxText: 6000 };
@@ -316,7 +322,7 @@
       const n = clamp(Math.round(Number(count) || 0), GAME.minPlayers, GAME.maxPlayers);
       const players = [];
       for (let i = 0; i < n; i++) players.push({ name: cleanName(names && names[i], i), level: 1 });
-      return { v: 1, players: players, turn: 0, round: 1, winner: null, bag: [] };
+      return { v: 1, mode: 'solo', players: players, turn: 0, round: 1, winner: null, bag: [] };
     }
 
     function shuffle(list, rand) {
@@ -378,8 +384,8 @@
       return word;
     }
 
-    // Updates levels after a turn and moves on to the next player.
-    function applyOutcome(game, outcome, teamMode) {
+    // Solo game: updates levels after a turn and moves on to the next player.
+    function applyOutcome(game, outcome) {
       const index = game.turn;
       const player = game.players[index];
       const before = player.level;
@@ -389,11 +395,6 @@
         player.level = Math.min(GAME.winLevel, before + 1);
         won = player.level >= GAME.winLevel;
         if (won) game.winner = index;
-      } else if (teamMode) {
-        game.players.forEach((p) => {
-          p.level = 1;
-        });
-        reset = 'team';
       } else {
         player.level = 1;
         reset = 'player';
@@ -405,11 +406,133 @@
       return { index: index, before: before, after: player.level, reset: reset, won: won };
     }
 
+    /* ---- team battle ---- */
+
+    // The limits, from 50 to 115 dB in even steps (rounded to 5 dB).
+    function teamLadder(steps) {
+      const n = clamp(Math.round(Number(steps) || 0), 2, TEAM.maxPlayers);
+      const ladder = [];
+      for (let i = 0; i < n; i++) {
+        const exact = TEAM.start + ((TEAM.end - TEAM.start) * i) / (n - 1);
+        ladder.push(i === 0 || i === n - 1 ? Math.round(exact) : Math.round(exact / 5) * 5);
+      }
+      return ladder;
+    }
+
+    function cleanTeamName(name, index) {
+      const n = String(name == null ? '' : name).replace(/\s+/g, ' ').trim().slice(0, 16);
+      return n || 'Team ' + (index + 1);
+    }
+
+    // teams: [{ name, count, names }], one or two of them.
+    function newBattle(teams) {
+      const defs = (Array.isArray(teams) && teams.length ? teams : [{}]).slice(0, TEAM.maxTeams);
+      const list = defs.map((t, i) => {
+        const def = t || {};
+        const count = clamp(Math.round(Number(def.count) || 0), TEAM.minPlayers, TEAM.maxPlayers);
+        const players = [];
+        for (let p = 0; p < count; p++) players.push(cleanName(def.names && def.names[p], p));
+        return { name: cleanTeamName(def.name, i), players: players, scores: [], attempt: 1, word: null, done: false };
+      });
+      const ladder = teamLadder(Math.max.apply(null, list.map((t) => t.players.length)));
+      list.forEach((t) => {
+        t.scores = ladder.map(() => null);
+      });
+      return { v: 1, mode: 'team', teams: list, ladder: ladder, current: 0, step: 0, finished: false, bag: [], lastWord: null };
+    }
+
+    // Who says the word now. A smaller team's players take extra turns.
+    function battlePlayer(game) {
+      const team = game.teams[game.current];
+      return team.players[game.step % team.players.length];
+    }
+
+    // Applies one turn of the team battle. res = { heard, peak }.
+    // kind: 'saved' (under the limit, score kept), 'bust' (over the limit: the
+    // team starts again at step 1 with a new word) or 'retry' (nothing heard).
+    function applyBattle(game, res) {
+      const team = game.teams[game.current];
+      const info = { team: game.current, step: game.step, limit: game.ladder[game.step], player: battlePlayer(game) };
+      if (!res || !res.heard) {
+        info.kind = 'retry';
+        return info;
+      }
+      const score = Math.max(0, round1(res.peak));
+      info.score = score;
+      if (score > info.limit) {
+        info.kind = 'bust';
+        team.scores = game.ladder.map(() => null);
+        team.attempt += 1;
+        team.word = null;
+        game.step = 0;
+        return info;
+      }
+      info.kind = 'saved';
+      team.scores[game.step] = score;
+      if (game.step + 1 < game.ladder.length) {
+        game.step += 1;
+        return info;
+      }
+      team.done = true;
+      info.teamDone = true;
+      const next = game.teams.findIndex((t) => !t.done);
+      if (next !== -1) {
+        game.current = next;
+        game.step = 0;
+        info.nextTeam = next;
+      } else {
+        game.finished = true;
+        info.finished = true;
+      }
+      return info;
+    }
+
+    // Per limit, the higher score (closer without going over) wins it. Most
+    // limits wins; if that's level, the team closest overall wins.
+    function compareBattle(game) {
+      const two = game.teams.length === 2;
+      const rows = game.ladder.map((limit, i) => {
+        const scores = game.teams.map((t) => t.scores[i]);
+        let winner = null;
+        if (two && scores[0] !== null && scores[1] !== null && scores[0] !== scores[1]) winner = scores[0] > scores[1] ? 0 : 1;
+        return { limit: limit, scores: scores, winner: winner };
+      });
+      const wins = game.teams.map((_, ti) => rows.filter((r) => r.winner === ti).length);
+      const under = game.teams.map((t) =>
+        round1(game.ladder.reduce((sum, limit, i) => sum + (t.scores[i] === null ? 0 : limit - t.scores[i]), 0))
+      );
+      let winner = null;
+      let reason = null;
+      if (two && game.teams.every((t) => t.done)) {
+        if (wins[0] !== wins[1]) {
+          winner = wins[0] > wins[1] ? 0 : 1;
+          reason = 'limits';
+        } else if (under[0] !== under[1]) {
+          winner = under[0] < under[1] ? 0 : 1;
+          reason = 'closer';
+        } else {
+          reason = 'tie';
+        }
+      }
+      return { rows: rows, wins: wins, under: under, winner: winner, reason: reason };
+    }
+
+    // How good a score is, by how far under the limit it landed.
+    function rateCloseness(under) {
+      if (under <= 1) return 'amazing';
+      if (under <= 3) return 'great';
+      if (under <= 6) return 'nice';
+      return 'safe';
+    }
+
+    function isGameOver(game) {
+      return game.mode === 'team' ? game.finished === true : game.winner !== null;
+    }
+
     function sanitizeSettings(raw) {
       const s = {
         v: SETTINGS_VERSION,
         offset: DEFAULT_OFFSET,
-        teamMode: false,
         targetOrder: 'random',
         difficulty: 'normal',
         wordSource: 'builtin',
@@ -423,7 +546,6 @@
         if (typeof raw.offset === 'number' && isFinite(offset) && !(fromV1 && offset === OLD_DEFAULT_OFFSET)) {
           s.offset = clamp(offset, OFFSET_MIN, OFFSET_MAX);
         }
-        if (typeof raw.teamMode === 'boolean') s.teamMode = raw.teamMode;
         if (TARGET_ORDERS.indexOf(raw.targetOrder) !== -1) s.targetOrder = raw.targetOrder;
         if (Object.prototype.hasOwnProperty.call(DIFFICULTIES, raw.difficulty)) s.difficulty = raw.difficulty;
         if (WORD_SOURCES.indexOf(raw.wordSource) !== -1) s.wordSource = raw.wordSource;
@@ -432,9 +554,61 @@
       return s;
     }
 
+    function sanitizeBag(raw) {
+      // The bag holds the words still to come (version 1 stored indexes into WORDS).
+      const bag = [];
+      (Array.isArray(raw.bag) ? raw.bag : []).forEach((w) => {
+        if (Number.isInteger(w) && w >= 0 && w < WORDS.length) bag.push(WORDS[w]);
+        else if (typeof w === 'string' && w && w.length <= CUSTOM_WORDS.maxLength) bag.push(w);
+      });
+      return bag;
+    }
+
+    function sanitizeBattle(raw) {
+      if (!Array.isArray(raw.teams) || raw.teams.length < 1 || raw.teams.length > TEAM.maxTeams) return null;
+      const teams = [];
+      for (let i = 0; i < raw.teams.length; i++) {
+        const t = raw.teams[i];
+        if (!t || typeof t !== 'object' || !Array.isArray(t.players)) return null;
+        if (t.players.length < TEAM.minPlayers || t.players.length > TEAM.maxPlayers) return null;
+        teams.push({
+          name: cleanTeamName(t.name, i),
+          players: t.players.map((p, j) => cleanName(p, j)),
+          scores: t.scores,
+          attempt: Number.isInteger(t.attempt) && t.attempt > 0 ? t.attempt : 1,
+          word: typeof t.word === 'string' && t.word && t.word.length <= CUSTOM_WORDS.maxLength ? t.word : null,
+          done: t.done === true,
+        });
+      }
+      const ladder = teamLadder(Math.max.apply(null, teams.map((t) => t.players.length)));
+      for (const t of teams) {
+        if (!Array.isArray(t.scores) || t.scores.length !== ladder.length) return null;
+        for (let i = 0; i < ladder.length; i++) {
+          const v = t.scores[i];
+          if (v !== null && !(typeof v === 'number' && isFinite(v) && v >= 0 && v <= ladder[i])) return null;
+        }
+        if (t.done && t.scores.some((v) => v === null)) return null;
+      }
+      if (!Number.isInteger(raw.current) || raw.current < 0 || raw.current >= teams.length) return null;
+      if (!Number.isInteger(raw.step) || raw.step < 0 || raw.step >= ladder.length) return null;
+      return {
+        v: 1,
+        mode: 'team',
+        teams: teams,
+        ladder: ladder,
+        current: raw.current,
+        step: raw.step,
+        finished: raw.finished === true,
+        bag: sanitizeBag(raw),
+        lastWord: typeof raw.lastWord === 'string' ? raw.lastWord : null,
+      };
+    }
+
     // Validates a saved game from storage; anything odd means "no saved game".
     function sanitizeGame(raw) {
-      if (!raw || typeof raw !== 'object' || !Array.isArray(raw.players)) return null;
+      if (!raw || typeof raw !== 'object') return null;
+      if (raw.mode === 'team') return sanitizeBattle(raw);
+      if (!Array.isArray(raw.players)) return null;
       const n = raw.players.length;
       if (n < GAME.minPlayers || n > GAME.maxPlayers) return null;
       const players = [];
@@ -451,23 +625,41 @@
         winner = raw.winner;
       }
       const round = Number.isInteger(raw.round) && raw.round > 0 ? raw.round : 1;
-      // The bag holds the words still to come (version 1 stored indexes into WORDS).
-      const bag = [];
-      (Array.isArray(raw.bag) ? raw.bag : []).forEach((w) => {
-        if (Number.isInteger(w) && w >= 0 && w < WORDS.length) bag.push(WORDS[w]);
-        else if (typeof w === 'string' && w && w.length <= CUSTOM_WORDS.maxLength) bag.push(w);
-      });
       const lastWord = typeof raw.lastWord === 'string' ? raw.lastWord : null;
-      return { v: 1, players: players, turn: raw.turn, round: round, winner: winner, bag: bag, lastWord: lastWord };
+      return { v: 1, mode: 'solo', players: players, turn: raw.turn, round: round, winner: winner, bag: sanitizeBag(raw), lastWord: lastWord };
+    }
+
+    // The game setup screen's choices (mode, teams, names), remembered between games.
+    function sanitizeSetup(raw) {
+      const r = raw && typeof raw === 'object' ? raw : {};
+      const roster = (x, min, max) => {
+        const o = x && typeof x === 'object' ? x : {};
+        return {
+          count: Number.isInteger(o.count) ? clamp(o.count, min, max) : 3,
+          names: Array.isArray(o.names) ? o.names.slice(0, max).map((n) => (typeof n === 'string' ? n.slice(0, 16) : '')) : [],
+        };
+      };
+      const teams = [0, 1].map((i) => {
+        const t = Array.isArray(r.teams) && r.teams[i] && typeof r.teams[i] === 'object' ? r.teams[i] : {};
+        const ro = roster(t, TEAM.minPlayers, TEAM.maxPlayers);
+        return { name: typeof t.name === 'string' ? t.name.slice(0, 16) : '', count: ro.count, names: ro.names };
+      });
+      return {
+        mode: r.mode === 'team' ? 'team' : 'solo',
+        teamCount: r.teamCount === 1 ? 1 : 2,
+        solo: roster(r.solo, GAME.minPlayers, GAME.maxPlayers),
+        teams: teams,
+      };
     }
 
     return {
       DEFAULT_OFFSET, OFFSET_MIN, OFFSET_MAX, METER_MIN, METER_MAX, FAST_TAU, SILENCE_DB, FRAME_MS,
       OLD_DEFAULT_OFFSET, SETTINGS_VERSION, TALK_DB,
-      GAME, VAD, WORDS, TARGET_ORDERS, DIFFICULTIES, WORD_SOURCES, CUSTOM_WORDS,
+      GAME, VAD, WORDS, TARGET_ORDERS, DIFFICULTIES, WORD_SOURCES, CUSTOM_WORDS, TEAM,
       clamp, round1, meanSquare, rms, powerToDb, rmsToDb, dbToPower, Smoother, Stats, zoneOf, median, speechLevel,
       windowForLevel, judge, targetRange, pickTarget, plannedTarget, targetFor, WordDetector, cleanName, newGame, shuffle,
-      parseWords, wordList, drawWord, applyOutcome, sanitizeSettings, sanitizeGame,
+      parseWords, wordList, drawWord, applyOutcome, sanitizeSettings, sanitizeGame, sanitizeSetup,
+      teamLadder, cleanTeamName, newBattle, battlePlayer, applyBattle, compareBattle, rateCloseness, isGameOver,
     };
   })();
 
@@ -522,6 +714,7 @@
   const KEYS = {
     settings: 'loudEnough.settings.v1',
     game: 'loudEnough.game.v1',
+    setup: 'loudEnough.setup.v1',
     tip: 'loudEnough.installTipDismissed.v1',
   };
   const store = {
@@ -1351,11 +1544,10 @@
       document.querySelectorAll('[data-words-editor]').forEach((el) => {
         el.hidden = settings.wordSource === 'builtin';
       });
-      const icon = ORDER_ICON[settings.targetOrder];
-      $('gameMode').textContent = (settings.teamMode ? 'Team' : 'Solo') + (icon ? ' · ' + icon : '');
-      $('gameMode').title = (settings.teamMode ? 'Team mode' : 'Solo mode') + ', ' + ORDER_NAME[settings.targetOrder];
-      $('gameMode').classList.toggle('team', settings.teamMode);
-      if (Game.phase === 'pass') Game.renderPass(); // keep the window and target in sync
+      // keep the game screens in sync (window, target order, phone ceiling)
+      if (Game.data) Game.renderBar();
+      if (Game.data && Game.phase === 'pass') Game.renderPass();
+      if (Game.setup && Game.phase === 'setup') Game.renderSetup();
     },
 
     onShow() {
@@ -1372,11 +1564,37 @@
     quiet: { text: 'Too quiet!', emoji: '🐭' },
   };
 
-  function renderPips(el, level) {
+  // Team battle: how a saved score is cheered, by how close it got to the limit.
+  const RATINGS = {
+    amazing: { text: 'Amazing!', emoji: '🤩', outcome: 'perfect' },
+    great: { text: 'Great!', emoji: '🔥', outcome: 'perfect' },
+    nice: { text: 'Nice!', emoji: '👍', outcome: 'ok' },
+    safe: { text: 'Safe!', emoji: '😅', outcome: 'ok' },
+  };
+
+  const MODE_HELP = {
+    solo: 'Everyone plays for themselves. Hit the target to level up, miss and you drop back to level 1. First to level 10 wins.',
+    team: 'Players say the same word one after the other, each as close to their limit as they dare without going over. Go over and your team starts again with a new word. Closest at the most limits wins.',
+  };
+
+  // The name editors on the setup screen.
+  const ROSTERS = [
+    { key: 'solo', count: 'playerCount', minus: 'pcMinus', plus: 'pcPlus', list: 'nameList', min: Core.GAME.minPlayers, max: Core.GAME.maxPlayers },
+    { key: 0, count: 't0Count', minus: 't0Minus', plus: 't0Plus', list: 't0Names', min: Core.TEAM.minPlayers, max: Core.TEAM.maxPlayers },
+    { key: 1, count: 't1Count', minus: 't1Minus', plus: 't1Plus', list: 't1Names', min: Core.TEAM.minPlayers, max: Core.TEAM.maxPlayers },
+  ];
+
+  // Highest reading this phone can show: a full-scale sine is offset - 3 dB.
+  function meterCeiling() {
+    return Math.floor(settings.offset - 3);
+  }
+
+  function renderPips(el, filled, total) {
     el.textContent = '';
-    for (let l = 1; l <= Core.GAME.winLevel; l++) {
+    const n = total || Core.GAME.winLevel;
+    for (let l = 1; l <= n; l++) {
       const pip = document.createElement('i');
-      if (l <= level) pip.className = 'on';
+      if (l <= filled) pip.className = 'on';
       el.appendChild(pip);
     }
   }
@@ -1403,25 +1621,93 @@
     });
   }
 
+  // Team battle score table: one row per limit, one column per team.
+  // `live` marks the cell being played right now.
+  function renderBattleTable(el, game, live) {
+    const cmp = Core.compareBattle(game);
+    el.textContent = '';
+    const table = document.createElement('table');
+    table.className = 'battle-table';
+    const th = (row, text, team) => {
+      const cell = document.createElement('th');
+      cell.textContent = text;
+      if (team !== undefined) cell.dataset.team = String(team);
+      row.appendChild(cell);
+      return cell;
+    };
+    const head = table.createTHead().insertRow();
+    th(head, 'Limit');
+    game.teams.forEach((t, i) => th(head, t.name, i));
+    const body = table.createTBody();
+    cmp.rows.forEach((r, i) => {
+      const row = body.insertRow();
+      const limit = row.insertCell();
+      limit.className = 'limit';
+      limit.textContent = r.limit + ' dB';
+      r.scores.forEach((v, ti) => {
+        const cell = row.insertCell();
+        cell.dataset.team = String(ti);
+        const now = live && !game.finished && game.current === ti && game.step === i;
+        cell.textContent = v === null ? (now ? '👉' : '—') : v.toFixed(1) + (r.winner === ti ? ' 🏆' : '');
+        if (r.winner === ti) cell.classList.add('win');
+        if (now) cell.classList.add('now');
+      });
+    });
+    const foot = table.createTFoot().insertRow();
+    if (game.teams.length === 2) {
+      th(foot, 'Limits won');
+      cmp.wins.forEach((w, ti) => {
+        const cell = foot.insertCell();
+        cell.dataset.team = String(ti);
+        cell.textContent = w;
+      });
+    } else {
+      th(foot, 'Total under');
+      foot.insertCell().textContent = cmp.under[0].toFixed(1) + ' dB';
+    }
+    el.appendChild(table);
+    return cmp;
+  }
+
   const Game = {
-    data: null, // the saved game: players, levels, whose turn
+    data: null, // the saved game (solo: players + levels; team: teams + scores)
+    setup: null, // the setup screen's choices, remembered between games
     phase: 'setup',
     turn: null, // the turn in progress: window, floor, word, target
     unsub: null,
-    count: 3,
-    names: [],
     bar: null,
 
     init() {
+      this.setup = Core.sanitizeSetup(store.get(KEYS.setup));
       const saved = Core.sanitizeGame(store.get(KEYS.game));
-      this.data = saved && saved.winner === null ? saved : null;
-      if (this.data) {
-        this.count = this.data.players.length;
-        this.names = this.data.players.map((p) => p.name);
-      }
+      this.data = saved && !Core.isGameOver(saved) ? saved : null;
 
-      $('pcMinus').addEventListener('click', () => this.setCount(this.count - 1));
-      $('pcPlus').addEventListener('click', () => this.setCount(this.count + 1));
+      ROSTERS.forEach((r) => {
+        $(r.minus).addEventListener('click', () => this.setCount(r, this.roster(r).count - 1));
+        $(r.plus).addEventListener('click', () => this.setCount(r, this.roster(r).count + 1));
+      });
+      [0, 1].forEach((i) => {
+        $('teamName' + i).addEventListener('input', (e) => {
+          this.setup.teams[i].name = e.target.value;
+          this.saveSetup();
+        });
+      });
+      document.querySelectorAll('input[name="gameMode"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+          if (!radio.checked) return;
+          this.setup.mode = radio.value;
+          this.saveSetup();
+          this.renderSetup();
+        });
+      });
+      document.querySelectorAll('input[name="teamCount"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+          if (!radio.checked) return;
+          this.setup.teamCount = Number(radio.value);
+          this.saveSetup();
+          this.renderSetup();
+        });
+      });
       $('startGame').addEventListener('click', () => this.start());
       $('continueBtn').addEventListener('click', () => {
         Mic.start().catch(showMicError);
@@ -1449,12 +1735,24 @@
       this.show('setup');
     },
 
+    isTeam() {
+      return !!this.data && this.data.mode === 'team';
+    },
+
     player() {
       return this.data.players[this.data.turn];
     },
 
+    screenEl(name) {
+      return document.querySelector('#view-game .screen[data-screen="' + name + '"]');
+    },
+
     save() {
       if (this.data) store.set(KEYS.game, this.data);
+    },
+
+    saveSetup() {
+      store.set(KEYS.setup, this.setup);
     },
 
     show(screen) {
@@ -1463,59 +1761,138 @@
         el.hidden = el.dataset.screen !== screen;
       });
       $('gameBar').hidden = screen === 'setup';
-      if (this.data) {
-        $('gameRound').textContent = 'Round ' + this.data.round;
-      }
+      this.renderBar();
       window.scrollTo(0, 0);
     },
 
+    renderBar() {
+      const d = this.data;
+      if (!d) return;
+      const round = $('gameRound');
+      const mode = $('gameMode');
+      if (d.mode === 'team') {
+        const team = d.teams[d.current];
+        round.textContent = team.name;
+        round.dataset.team = String(d.current);
+        mode.textContent = 'Try ' + team.attempt;
+        mode.title = team.name + ', attempt ' + team.attempt;
+        $('scoresBtn').textContent = '📋 Scores';
+      } else {
+        round.textContent = 'Round ' + d.round;
+        round.removeAttribute('data-team');
+        const icon = ORDER_ICON[settings.targetOrder];
+        mode.textContent = 'Solo' + (icon ? ' · ' + icon : '');
+        mode.title = 'Solo game, ' + ORDER_NAME[settings.targetOrder];
+        $('scoresBtn').textContent = '🏆 Scores';
+      }
+    },
+
     /* ---- setup ---- */
-    setCount(n) {
-      this.count = Core.clamp(n, Core.GAME.minPlayers, Core.GAME.maxPlayers);
+    roster(r) {
+      return r.key === 'solo' ? this.setup.solo : this.setup.teams[r.key];
+    },
+
+    setCount(r, n) {
+      this.roster(r).count = Core.clamp(n, r.min, r.max);
+      this.saveSetup();
       this.renderSetup();
     },
 
-    renderSetup() {
-      $('playerCount').textContent = this.count;
-      $('pcMinus').disabled = this.count <= Core.GAME.minPlayers;
-      $('pcPlus').disabled = this.count >= Core.GAME.maxPlayers;
-      const list = $('nameList');
-      const inputs = list.querySelectorAll('input');
+    renderRoster(r) {
+      const roster = this.roster(r);
+      $(r.count).textContent = roster.count;
+      $(r.minus).disabled = roster.count <= r.min;
+      $(r.plus).disabled = roster.count >= r.max;
+      const list = $(r.list);
       // Rebuild only when the count changed, so typing isn't interrupted.
-      if (inputs.length !== this.count) {
-        list.textContent = '';
-        for (let i = 0; i < this.count; i++) {
-          const row = document.createElement('div');
-          row.className = 'name-row';
-          const num = document.createElement('span');
-          num.className = 'name-num';
-          num.textContent = i + 1;
-          const input = document.createElement('input');
-          input.type = 'text';
-          input.maxLength = 16;
-          input.placeholder = 'Player ' + (i + 1);
-          input.value = this.names[i] || '';
-          input.autocomplete = 'off';
-          input.setAttribute('autocapitalize', 'words');
-          input.setAttribute('enterkeyhint', i === this.count - 1 ? 'done' : 'next');
-          input.setAttribute('aria-label', 'Name of player ' + (i + 1));
-          input.addEventListener('input', () => {
-            this.names[i] = input.value;
-          });
-          input.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter') return;
-            const next = list.querySelectorAll('input')[i + 1];
-            if (next) next.focus();
-            else input.blur();
-          });
-          row.appendChild(num);
-          row.appendChild(input);
-          list.appendChild(row);
-        }
+      if (list.querySelectorAll('input').length === roster.count) return;
+      list.textContent = '';
+      for (let i = 0; i < roster.count; i++) {
+        const row = document.createElement('div');
+        row.className = 'name-row';
+        const num = document.createElement('span');
+        num.className = 'name-num';
+        num.textContent = i + 1;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.maxLength = 16;
+        input.placeholder = 'Player ' + (i + 1);
+        input.value = roster.names[i] || '';
+        input.autocomplete = 'off';
+        input.setAttribute('autocapitalize', 'words');
+        input.setAttribute('enterkeyhint', i === roster.count - 1 ? 'done' : 'next');
+        input.setAttribute('aria-label', 'Name of player ' + (i + 1));
+        input.addEventListener('input', () => {
+          roster.names[i] = input.value;
+          this.saveSetup();
+        });
+        input.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter') return;
+          const next = list.querySelectorAll('input')[i + 1];
+          if (next) next.focus();
+          else input.blur();
+        });
+        row.appendChild(num);
+        row.appendChild(input);
+        list.appendChild(row);
       }
+    },
+
+    renderSetup() {
+      const s = this.setup;
+      const team = s.mode === 'team';
+      document.querySelectorAll('input[name="gameMode"]').forEach((radio) => {
+        radio.checked = radio.value === s.mode;
+      });
+      document.querySelectorAll('input[name="teamCount"]').forEach((radio) => {
+        radio.checked = Number(radio.value) === s.teamCount;
+      });
+      $('modeHelp').textContent = MODE_HELP[s.mode];
+      $('teamCountBlock').hidden = !team;
+      $('soloPlayersCard').hidden = team;
+      $('teamCard0').hidden = !team;
+      $('teamCard1').hidden = !team || s.teamCount === 1;
+      [0, 1].forEach((i) => {
+        const el = $('teamName' + i);
+        if (document.activeElement !== el) el.value = s.teams[i].name;
+      });
+      ROSTERS.forEach((r) => this.renderRoster(r));
+
+      $('ladderCard').hidden = !team;
+      if (team) {
+        const sizes = s.teams.slice(0, s.teamCount).map((t) => t.count);
+        const ladder = Core.teamLadder(Math.max.apply(null, sizes));
+        const ceiling = meterCeiling();
+        const box = $('ladderPreview');
+        box.textContent = '';
+        ladder.forEach((limit, i) => {
+          if (i) box.appendChild(document.createTextNode(' → '));
+          const step = document.createElement('span');
+          step.textContent = limit;
+          if (limit > ceiling) step.className = 'top';
+          box.appendChild(step);
+        });
+        box.appendChild(document.createTextNode(' dB'));
+        let help = ladder.length + ' limits, one per player';
+        if (s.teamCount === 2 && sizes[0] !== sizes[1]) help += "; the smaller team's players take extra turns";
+        help += '.';
+        if (ladder[ladder.length - 1] > ceiling) {
+          help += ' This phone can measure up to about ' + ceiling + ' dB, so on the red limits it is all about screaming as loud as you can.';
+        }
+        $('ladderHelp').textContent = help;
+      }
+      document.querySelectorAll('#setupOptions [data-solo-only]').forEach((el) => {
+        el.hidden = team;
+      });
+      $('startGame').textContent = team ? 'Start team battle ⚔️' : 'Start game 🎉';
+
       const card = $('resumeCard');
       card.hidden = !this.data;
-      if (this.data) {
+      if (this.data && this.data.mode === 'team') {
+        const d = this.data;
+        $('resumeInfo').textContent =
+          'Team battle · ' + d.teams.map((t) => t.name).join(' vs ') + ' · ' + d.teams[d.current].name + ' on step ' + (d.step + 1) + ' of ' + d.ladder.length;
+      } else if (this.data) {
         const leader = this.data.players.reduce((a, b) => (b.level > a.level ? b : a));
         $('resumeInfo').textContent =
           this.data.players.length + ' players · round ' + this.data.round + ' · ' + leader.name + ' leads on level ' + leader.level;
@@ -1523,7 +1900,12 @@
     },
 
     start() {
-      this.data = Core.newGame(this.count, this.names);
+      const s = this.setup;
+      if (s.mode === 'team') {
+        this.data = Core.newBattle(s.teams.slice(0, s.teamCount).map((t) => ({ name: t.name, count: t.count, names: t.names })));
+      } else {
+        this.data = Core.newGame(s.solo.count, s.solo.names);
+      }
       this.save();
       // This tap also switches the mic on, so the permission prompt shows now.
       Mic.start().catch(showMicError);
@@ -1544,8 +1926,12 @@
     },
 
     rematch() {
-      const names = this.data.players.map((p) => p.name);
-      this.data = Core.newGame(names.length, names);
+      if (this.data.mode === 'team') {
+        this.data = Core.newBattle(this.data.teams.map((t) => ({ name: t.name, count: t.players.length, names: t.players })));
+      } else {
+        const names = this.data.players.map((p) => p.name);
+        this.data = Core.newGame(names.length, names);
+      }
       this.save();
       this.showPass();
     },
@@ -1557,7 +1943,7 @@
         this.show('setup');
         return;
       }
-      if (this.data.winner !== null) {
+      if (Core.isGameOver(this.data)) {
         this.showWin();
         return;
       }
@@ -1569,10 +1955,35 @@
     },
 
     renderPass() {
+      const d = this.data;
+      const screen = this.screenEl('pass');
+      const team = d.mode === 'team';
+      $('passTeam').hidden = !team;
+      $('passSoloRule').hidden = team;
+      $('passBattleRule').hidden = !team;
+      $('passWord').hidden = !team;
+      if (team) {
+        const t = d.teams[d.current];
+        const limit = d.ladder[d.step];
+        screen.dataset.team = String(d.current);
+        $('passTeam').textContent = t.name + ' · step ' + (d.step + 1) + ' of ' + d.ladder.length;
+        $('passName').textContent = Core.battlePlayer(d);
+        $('passBadgeLabel').textContent = 'Limit ';
+        $('passLevel').textContent = limit;
+        $('passBadgeSuffix').textContent = ' dB';
+        $('passLimit').textContent = limit;
+        $('passWord').textContent = t.word ? '🔁 Same word: ' + t.word : '🆕 New word coming up!';
+        $('passTarget').hidden = true;
+        renderPips($('passPips'), d.step, d.ladder.length);
+        return;
+      }
+      screen.removeAttribute('data-team');
       const p = this.player();
       const planned = Core.plannedTarget(p.level, settings.targetOrder);
       $('passName').textContent = p.name;
+      $('passBadgeLabel').textContent = 'Level ';
       $('passLevel').textContent = p.level;
+      $('passBadgeSuffix').textContent = '/10';
       $('passWindow').textContent = Core.windowForLevel(p.level, settings.difficulty);
       $('passTarget').hidden = planned === null;
       $('passTargetIcon').textContent = ORDER_ICON[settings.targetOrder];
@@ -1607,8 +2018,13 @@
 
     // One second of silence = the noise floor for this turn.
     measureFloor() {
-      const p = this.player();
-      this.turn = { win: Core.windowForLevel(p.level, settings.difficulty), floorFs: null, word: null, target: null };
+      const team = this.isTeam();
+      this.turn = {
+        win: team ? Core.TEAM.sweetSpot : Core.windowForLevel(this.player().level, settings.difficulty),
+        floorFs: null,
+        word: null,
+        target: null,
+      };
       this.show('quiet');
       const bar = $('quietBar');
       bar.classList.remove('run');
@@ -1630,21 +2046,49 @@
 
     reveal(floorFs) {
       const t = this.turn;
-      const p = this.player();
+      const d = this.data;
+      const team = d.mode === 'team';
+      const screen = this.screenEl('reveal');
       t.floorFs = floorFs;
       const floorSpl = spl(floorFs);
-      const pick = Core.targetFor(p.level, { order: settings.targetOrder, difficulty: settings.difficulty, floor: floorSpl });
-      t.win = pick.win;
-      t.target = pick.target;
-      t.word = Core.drawWord(this.data, Core.wordList(settings));
+      if (team) {
+        const tm = d.teams[d.current];
+        if (!tm.word) tm.word = Core.drawWord(d, Core.wordList(settings));
+        t.word = tm.word;
+        t.target = d.ladder[d.step];
+        t.win = Core.TEAM.sweetSpot;
+        screen.dataset.team = String(d.current);
+        $('revealKicker').textContent = tm.name + ' · ' + Core.battlePlayer(d) + ' · step ' + (d.step + 1) + '/' + d.ladder.length;
+        $('revealAt').textContent = 'limit';
+        const ceiling = meterCeiling();
+        $('revealMax').hidden = t.target <= ceiling;
+        $('revealMax').textContent = '📱 This phone measures up to about ' + ceiling + ' dB, so for this limit: scream as loud as you can!';
+        const hearFrom = Math.round(floorSpl + Core.VAD.onMargin);
+        $('revealNoisy').hidden = hearFrom < t.target;
+        $('revealNoisy').textContent =
+          "🔊 It's noisy here: we can only hear you above about " + hearFrom + ' dB, which is over this limit. Find a quieter spot, or go as soft as you can.';
+        $('revealRaised').hidden = true;
+      } else {
+        const p = this.player();
+        const pick = Core.targetFor(p.level, { order: settings.targetOrder, difficulty: settings.difficulty, floor: floorSpl });
+        t.win = pick.win;
+        t.target = pick.target;
+        t.word = Core.drawWord(d, Core.wordList(settings));
+        screen.removeAttribute('data-team');
+        $('revealKicker').textContent = p.name + ' · level ' + p.level;
+        $('revealAt').textContent = 'at';
+        $('revealRange').textContent = t.target - t.win + '–' + t.target + ' dB';
+        $('revealRaised').hidden = !pick.raised;
+        $('revealMax').hidden = true;
+        $('revealNoisy').hidden = true;
+      }
       this.save(); // remembers which words were used
-      $('revealName').textContent = p.name;
-      $('revealLevel').textContent = p.level;
+      $('revealChipSolo').hidden = team;
+      // above what the phone can measure, the only advice is "scream"
+      $('revealChipBattle').hidden = !team || !$('revealMax').hidden;
       $('revealWord').textContent = t.word;
       $('revealTarget').textContent = t.target;
-      $('revealRange').textContent = t.target - t.win + '–' + t.target + ' dB';
       $('revealRoom').textContent = Math.max(0, Math.round(floorSpl));
-      $('revealRaised').hidden = !pick.raised;
       this.show('reveal');
     },
 
@@ -1659,7 +2103,7 @@
       const detector = new Core.WordDetector(floorSpl);
       this.setupBar(t.target, t.win, floorSpl);
       $('listenWord').textContent = t.word;
-      $('listenTarget').textContent = t.target - t.win + '–' + t.target + ' dB';
+      $('listenTargetLine').textContent = this.isTeam() ? 'Limit ' + t.target + ' dB' : 'Target ' + (t.target - t.win) + '–' + t.target + ' dB';
       $('listenStatus').textContent = 'Say it now!';
       $('listenValue').textContent = '--';
       this.show('listen');
@@ -1676,10 +2120,14 @@
     },
 
     finish(res) {
+      if (this.isTeam()) {
+        this.finishBattle(res);
+        return;
+      }
       const t = this.turn;
       const p = this.player();
       const outcome = res.heard ? Core.judge(res.peak, t.target, t.win) : 'quiet';
-      const change = Core.applyOutcome(this.data, outcome, settings.teamMode);
+      const change = Core.applyOutcome(this.data, outcome);
       this.save();
       if (outcome !== 'perfect') buzz([90, 60, 220]);
       if (change.won) {
@@ -1691,13 +2139,41 @@
       if (outcome === 'perfect') Confetti.burst(90);
     },
 
+    finishBattle(res) {
+      const change = Core.applyBattle(this.data, res);
+      if (change.finished) store.remove(KEYS.game);
+      else this.save();
+      if (change.kind === 'bust') buzz([90, 60, 220]);
+      this.renderBattleResult(change);
+      if (change.kind === 'saved' && change.limit - change.score <= 1) Confetti.burst(90);
+    },
+
+    // The marker strip on the result screen: where the peak landed.
+    renderStrip(target, win, peak) {
+      const lo = target - 15;
+      const hi = target + 9;
+      const pct = (v) => Core.clamp(((v - lo) / (hi - lo)) * 100, 0, 100);
+      $('stripWindow').style.left = pct(target - win) + '%';
+      $('stripWindow').style.width = pct(target) - pct(target - win) + '%';
+      $('stripTarget').style.left = pct(target) + '%';
+      const marker = $('stripMarker');
+      marker.hidden = peak === null;
+      if (peak !== null) {
+        marker.style.left = pct(peak) + '%';
+        $('stripMarkerLabel').textContent = peak.toFixed(1);
+      }
+    },
+
     renderResult(outcome, res, t, p, change) {
-      const screen = document.querySelector('#view-game .screen[data-screen="result"]');
+      const screen = this.screenEl('result');
       screen.dataset.outcome = outcome;
+      screen.removeAttribute('data-team');
+      $('resultTeam').hidden = true;
       $('resultEmoji').textContent = VERDICT[outcome].emoji;
       $('resultVerdict').textContent = VERDICT[outcome].text;
       const peak = res.heard ? Core.round1(res.peak) : null;
       $('resultPeak').textContent = peak === null ? '--' : peak.toFixed(1) + ' dB';
+      $('resultTargetLabel').textContent = 'Target';
       $('resultTarget').textContent = t.target - t.win + '–' + t.target + ' dB';
 
       let delta;
@@ -1709,39 +2185,131 @@
       $('resultDelta').textContent = delta;
 
       let level;
-      if (change.reset === 'team') level = 'Team mode: everyone goes back to level 1! 😱';
-      else if (change.reset === 'player') level = change.before > 1 ? p.name + ' drops from level ' + change.before + ' back to 1' : p.name + ' stays on level 1';
+      if (change.reset === 'player') level = change.before > 1 ? p.name + ' drops from level ' + change.before + ' back to 1' : p.name + ' stays on level 1';
       else level = p.name + ': level ' + change.before + ' → ' + change.after + ' ⬆️';
       $('resultLevel').textContent = level;
 
-      // where the peak landed relative to the window
-      const lo = t.target - 15;
-      const hi = t.target + 9;
-      const pct = (v) => Core.clamp(((v - lo) / (hi - lo)) * 100, 0, 100);
-      $('stripWindow').style.left = pct(t.target - t.win) + '%';
-      $('stripWindow').style.width = pct(t.target) - pct(t.target - t.win) + '%';
-      $('stripTarget').style.left = pct(t.target) + '%';
-      const marker = $('stripMarker');
-      marker.hidden = peak === null;
-      if (peak !== null) {
-        marker.style.left = pct(peak) + '%';
-        $('stripMarkerLabel').textContent = peak.toFixed(1);
-      }
-
+      this.renderStrip(t.target, t.win, peak);
       $('nextBtn').textContent = 'Next: ' + this.player().name + ' →';
+      $('resultScores').hidden = false;
+      $('resultBattle').hidden = true;
       renderScoreboard($('resultScores'), this.data, change.index);
       this.show('result');
     },
 
+    renderBattleResult(change) {
+      const d = this.data;
+      const team = d.teams[change.team];
+      const screen = this.screenEl('result');
+      screen.dataset.team = String(change.team);
+      $('resultTeam').hidden = false;
+      $('resultTeam').textContent = team.name + ' · step ' + (change.step + 1) + ' of ' + d.ladder.length;
+      let v;
+      if (change.kind === 'retry') v = { outcome: 'quiet', emoji: '👂', text: "Didn't hear you!" };
+      else if (change.kind === 'bust') v = { outcome: 'loud', emoji: '🙉', text: 'Too loud!' };
+      else v = RATINGS[Core.rateCloseness(Core.round1(change.limit - change.score))];
+      screen.dataset.outcome = v.outcome;
+      $('resultEmoji').textContent = v.emoji;
+      $('resultVerdict').textContent = v.text;
+      const scored = change.kind !== 'retry';
+      $('resultPeak').textContent = scored ? change.score.toFixed(1) + ' dB' : '--';
+      $('resultTargetLabel').textContent = 'Limit';
+      $('resultTarget').textContent = change.limit + ' dB';
+
+      let delta;
+      let line;
+      if (change.kind === 'retry') {
+        delta = 'Nothing was louder than the room.';
+        line = 'Same word, same limit: ' + change.player + ' tries again.';
+      } else if (change.kind === 'bust') {
+        delta = Core.round1(change.score - change.limit).toFixed(1) + ' dB over the ' + change.limit + ' dB limit';
+        line = team.name + ' starts again at step 1 with a new word 😱';
+      } else {
+        const under = Core.round1(change.limit - change.score);
+        delta = under === 0 ? 'Exactly on the limit!' : under.toFixed(1) + ' dB under the limit';
+        line = 'Saved: ' + change.score.toFixed(1) + ' for ' + team.name + ' at the ' + change.limit + ' dB limit';
+        if (change.teamDone) line += '. Ladder complete! 🎉';
+      }
+      $('resultDelta').textContent = delta;
+      $('resultLevel').textContent = line;
+      this.renderStrip(change.limit, Core.TEAM.sweetSpot, scored ? change.score : null);
+
+      let next;
+      if (change.finished) next = 'See the results 🏆';
+      else if (change.nextTeam !== undefined) next = d.teams[change.nextTeam].name + "'s turn →";
+      else if (change.kind === 'retry') next = 'Try again →';
+      else if (change.kind === 'bust') next = 'Start again: ' + Core.battlePlayer(d) + ' →';
+      else next = 'Next: ' + Core.battlePlayer(d) + ' →';
+      $('nextBtn').textContent = next;
+      $('resultScores').hidden = true;
+      $('resultBattle').hidden = false;
+      renderBattleTable($('resultBattle'), d, true);
+      this.show('result');
+    },
+
     showWin(last) {
+      if (this.isTeam()) {
+        this.showBattleEnd();
+        return;
+      }
       const d = this.data;
       const w = d.players[d.winner];
+      this.screenEl('win').removeAttribute('data-team');
+      $('winTrophy').textContent = '🏆';
       $('winName').textContent = w.name;
-      $('winMsg').textContent = settings.teamMode
-        ? 'The team made it! ' + w.name + ' reached level 10 first.'
-        : w.name + ' reached level 10 first.';
+      $('winSuffix').textContent = ' wins!';
+      $('winMsg').textContent = w.name + ' reached level 10 first.';
       $('winLast').textContent = last ? 'Winning word: "' + last.word + '" at ' + Core.round1(last.peak).toFixed(1) + ' dB' : '';
+      $('winScores').hidden = false;
+      $('winBattle').hidden = true;
+      $('newPlayersBtn').textContent = 'New players';
       renderScoreboard($('winScores'), d, d.winner);
+      this.show('win');
+      Confetti.burst(240);
+    },
+
+    showBattleEnd() {
+      const d = this.data;
+      const screen = this.screenEl('win');
+      $('winScores').hidden = true;
+      $('winBattle').hidden = false;
+      const cmp = renderBattleTable($('winBattle'), d, false);
+      let trophy = '🏆';
+      let name;
+      let suffix;
+      let msg;
+      if (d.teams.length === 1) {
+        trophy = '🏁';
+        name = d.teams[0].name;
+        suffix = ' finished!';
+        msg =
+          'All ' + d.ladder.length + ' limits done, ' + cmp.under[0].toFixed(1) + ' dB under in total. ' +
+          'Compare with the other team: at each limit, the closer team wins it.';
+        screen.dataset.team = '0';
+      } else if (cmp.winner === null) {
+        trophy = '🤝';
+        name = "It's a tie";
+        suffix = '!';
+        msg = 'Same number of limits (' + cmp.wins[0] + '–' + cmp.wins[1] + ') and exactly as close overall. Rematch!';
+        screen.removeAttribute('data-team');
+      } else {
+        const w = cmp.winner;
+        const o = 1 - w;
+        name = d.teams[w].name;
+        suffix = ' wins!';
+        msg =
+          cmp.reason === 'limits'
+            ? 'Closest at ' + cmp.wins[w] + ' of ' + d.ladder.length + ' limits (' + d.teams[o].name + ': ' + cmp.wins[o] + ').'
+            : 'Level on limits (' + cmp.wins[0] + '–' + cmp.wins[1] + '), but ' + name + ' was closer overall: ' +
+              cmp.under[w].toFixed(1) + ' vs ' + cmp.under[o].toFixed(1) + ' dB under.';
+        screen.dataset.team = String(w);
+      }
+      $('winTrophy').textContent = trophy;
+      $('winName').textContent = name;
+      $('winSuffix').textContent = suffix;
+      $('winMsg').textContent = msg;
+      $('winLast').textContent = '';
+      $('newPlayersBtn').textContent = 'New game';
       this.show('win');
       Confetti.burst(240);
     },
@@ -1816,7 +2384,11 @@
     /* ---- scoreboard dialog ---- */
     openScores() {
       if (!this.data) return;
-      renderScoreboard($('scoresList'), this.data, this.data.winner !== null ? this.data.winner : this.data.turn);
+      const team = this.isTeam();
+      $('scoresList').hidden = team;
+      $('scoresBattle').hidden = !team;
+      if (team) renderBattleTable($('scoresBattle'), this.data, true);
+      else renderScoreboard($('scoresList'), this.data, this.data.winner !== null ? this.data.winner : this.data.turn);
       $('scoresModal').hidden = false;
       $('scoresClose').focus();
     },
