@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Loud Enough</title>
+  <meta name="description" content="Live decibel meter plus a party game: say the word loud enough, but not too loud.">
+  <meta name="theme-color" content="#0d0820">
+  <meta name="color-scheme" content="dark">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Loud Enough">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <path d="M6 34 A18 18 0 0 1 13.4 19.4" class="bm-g"/>
+          <path d="M15.6 17.8 A18 18 0 0 1 32.4 17.8" class="bm-y"/>
+          <path d="M34.6 19.4 A18 18 0 0 1 42 34" class="bm-r"/>
+          <line x1="24" y1="34" x2="33" y2="22" class="bm-n"/>
+          <circle cx="24" cy="34" r="4" class="bm-c"/>
+        </svg>
+        <span class="brand-name">Loud <em>Enough</em></span>
+      </div>
+      <div class="mic-pill" id="micPill" data-state="off" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span><span id="micPillText">Mic off</span>
+      </div>
+    </header>
+
+    <div class="banner" id="resumeBanner" hidden>
+      <span>Mic paused</span>
+      <button type="button" class="btn btn-small btn-primary" id="resumeBtn">Tap to resume</button>
+    </div>
+
+    <main>
+      <!-- ============================ METER ============================ -->
+      <section class="view" id="view-meter" data-view="meter" aria-label="Decibel meter">
+        <div class="install-tip" id="installTip" hidden>
+          <span>📲 Put Loud Enough on your home screen</span>
+          <button type="button" class="link-btn" id="installTipHow">How?</button>
+          <button type="button" class="icon-btn" id="installTipClose" aria-label="Dismiss tip">✕</button>
+        </div>
+
+        <div class="card gauge-card">
+          <div class="gauge-wrap">
+            <svg id="gauge" class="gauge" viewBox="0 0 320 196" role="img" aria-label="Sound level gauge">
+              <g id="gaugeTracks"></g>
+              <g id="gaugeLevels"></g>
+              <g id="gaugeTicks"></g>
+              <g id="gaugeRefs"></g>
+              <path id="peakTick" class="peak-tick" d=""/>
+            </svg>
+            <div class="readout" id="readout" data-zone="off">
+              <div class="db"><span id="dbInt">--</span><span id="dbDec" class="dec"></span><span class="unit">dB</span></div>
+              <div class="zone-label" id="zoneLabel">Mic is off</div>
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary btn-wide" id="micBtn">🎤 Start meter</button>
+          <p class="error" id="meterError" role="alert" hidden></p>
+        </div>
+
+        <div class="refs" id="refChips">
+          <div class="ref" data-ref="whisper"><span class="ref-emoji" aria-hidden="true">🤫</span><b>30</b><small>Whisper</small></div>
+          <div class="ref" data-ref="talk"><span class="ref-emoji" aria-hidden="true">💬</span><b>60</b><small>Conversation</small></div>
+          <div class="ref" data-ref="shout"><span class="ref-emoji" aria-hidden="true">📣</span><b>80+</b><small>Shouting</small></div>
+        </div>
+
+        <div class="card graph-card">
+          <h2 class="card-title">Last 10 seconds</h2>
+          <canvas id="graph" class="graph" aria-label="Sound level over the last 10 seconds"></canvas>
+          <div class="graph-axis" aria-hidden="true"><span>−10 s</span><span>−5 s</span><span>now</span></div>
+        </div>
+
+        <div class="card stats-card">
+          <div class="stats">
+            <div class="stat"><small>Min</small><b id="statMin">--</b></div>
+            <div class="stat"><small>Avg</small><b id="statAvg">--</b></div>
+            <div class="stat"><small>Max</small><b id="statMax">--</b></div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-reset" id="resetStats">↺ Reset</button>
+        </div>
+
+        <p class="note">⚠️ <b>Approximate meter, not a certified sound level meter.</b> Phone microphones differ, so readings are estimates. Calibrate in Settings for better accuracy.</p>
+      </section>
+
+      <!-- ============================ GAME ============================ -->
+      <section class="view" id="view-game" data-view="game" aria-label="Party game" hidden>
+        <div class="game-bar" id="gameBar" hidden>
+          <span class="chip" id="gameRound">Round 1</span>
+          <span class="chip chip-mode" id="gameMode">Solo</span>
+          <button type="button" class="btn btn-small btn-ghost" id="scoresBtn">🏆 Scores</button>
+          <button type="button" class="icon-btn" id="quitBtn" aria-label="End game">✕</button>
+        </div>
+
+        <!-- Setup -->
+        <div class="screen" data-screen="setup">
+          <div class="hero">
+            <div class="hero-emoji" aria-hidden="true">🎤</div>
+            <h1 class="hero-title">The <span class="grad">Loud Enough</span> Game</h1>
+            <p class="hero-sub">Say the word. Hit the number. Not too loud, not too quiet.</p>
+          </div>
+
+          <div class="card resume-card" id="resumeCard" hidden>
+            <div>
+              <h2 class="card-title">Game in progress</h2>
+              <p class="muted" id="resumeInfo"></p>
+            </div>
+            <div class="row">
+              <button type="button" class="btn btn-primary" id="continueBtn">▶ Continue</button>
+              <button type="button" class="btn btn-ghost" id="discardBtn">New game</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Players</h2>
+            <div class="stepper">
+              <button type="button" class="btn-round" id="pcMinus" aria-label="Fewer players">−</button>
+              <output id="playerCount" aria-live="polite">3</output>
+              <button type="button" class="btn-round" id="pcPlus" aria-label="More players">+</button>
+            </div>
+            <div class="name-list" id="nameList"></div>
+            <p class="help">Names are optional.</p>
+          </div>
+
+          <div class="card">
+            <h2 class="card-title">Rules &amp; words</h2>
+            <div id="setupOptions"></div>
+          </div>
+
+          <button type="button" class="btn btn-primary btn-wide btn-xl" id="startGame">Start game 🎉</button>
+
+          <details class="card how">
+            <summary>How to play</summary>
+            <ol>
+              <li>Pass the phone. On your turn, tap <b>I'm ready</b>. Everyone hushes for 1 second while the room is measured.</li>
+              <li>You get a word and a target in dB. Tap <b>GO</b> and say the word.</li>
+              <li>Your loudest moment has to land in the window just <b>under</b> the target. Over the line is <i>too loud</i>; under the window is <i>too quiet</i>.</li>
+              <li>Hit it to level up. Miss and you're back to level 1 (in Team mode, everyone is).</li>
+              <li>The window shrinks as you climb. On <b>Normal</b> it's 5 dB (levels 1–3), 4 dB (4–6), then 3 dB (7–9); <b>Easy</b> and <b>Hard</b> make it wider or tighter. First to <b>level 10</b> wins!</li>
+              <li>Targets are random (50–85 dB), or go <b>Loud → soft</b> (85 down to 50 dB) or <b>Soft → loud</b> (50 up to 85 dB), one step per level. A miss puts you back at the start of the ladder.</li>
+              <li>Pick <b>My words</b> to play with your own words: inside jokes, names, anything.</li>
+            </ol>
+          </details>
+        </div>
+
+        <!-- Pass the phone -->
+        <div class="screen center" data-screen="pass" hidden>
+          <p class="kicker">Pass the phone to</p>
+          <h1 class="big-name" id="passName">Player</h1>
+          <div class="level-badge">Level <b id="passLevel">1</b><span>/10</span></div>
+          <div class="pips pips-lg" id="passPips" aria-hidden="true"></div>
+          <p class="muted">Your window: <b id="passWindow">5</b> dB under the target</p>
+          <p class="pass-target" id="passTarget" hidden><span id="passTargetIcon">📉</span> Target at this level: <b id="passTargetValue">85</b> dB</p>
+          <button type="button" class="btn btn-primary btn-wide btn-xl" id="readyBtn">I'm ready</button>
+          <p class="help">After you tap, everyone stays quiet for one second.</p>
+          <p class="error" id="gameError" role="alert" hidden></p>
+        </div>
+
+        <!-- Measuring silence -->
+        <div class="screen center" data-screen="quiet" hidden>
+          <div class="shh" aria-hidden="true">🤫</div>
+          <h1 class="screen-title">Shhh…</h1>
+          <p class="muted">Measuring the room for 1 second</p>
+          <div class="progress"><div class="progress-fill" id="quietBar"></div></div>
+        </div>
+
+        <!-- Word + target -->
+        <div class="screen center" data-screen="reveal" hidden>
+          <p class="kicker"><span id="revealName">Player</span> · level <span id="revealLevel">1</span></p>
+          <p class="say">Say</p>
+          <h1 class="word" id="revealWord">Banana</h1>
+          <p class="say">at</p>
+          <div class="target"><span id="revealTarget">70</span><small>dB</small></div>
+          <p class="range-chip">Hit <b id="revealRange">67–70 dB</b>, not higher!</p>
+          <button type="button" class="btn-go" id="goBtn">GO!</button>
+          <p class="help">Room noise: <span id="revealRoom">--</span> dB<span id="revealRaised" hidden> · noisy room, so the target was raised</span></p>
+        </div>
+
+        <!-- Listening -->
+        <div class="screen center" data-screen="listen" hidden>
+          <p class="kicker" id="listenStatus">Say it now!</p>
+          <h1 class="word word-sm" id="listenWord">Banana</h1>
+          <div class="listen-body">
+            <div class="vbar" aria-hidden="true">
+              <div class="vbar-scale" id="barScale"></div>
+              <div class="vbar-track">
+                <div class="vbar-over" id="barOver"></div>
+                <div class="vbar-window" id="barWindow"></div>
+                <div class="vbar-fill" id="barFill" data-state="below"></div>
+                <div class="vbar-floor" id="barFloor"><span>room</span></div>
+                <div class="vbar-peak" id="barPeak" hidden></div>
+                <div class="vbar-target" id="barTarget"><span id="barTargetLabel">70</span></div>
+              </div>
+            </div>
+            <div class="listen-readout">
+              <div class="live-db"><span id="listenValue">--</span><small>dB</small></div>
+              <p class="muted">Target <b id="listenTarget">67–70</b></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Result -->
+        <div class="screen center" data-screen="result" data-outcome="perfect" hidden>
+          <div class="result-emoji" id="resultEmoji" aria-hidden="true">🎯</div>
+          <h1 class="verdict" id="resultVerdict" aria-live="assertive">Perfect!</h1>
+          <div class="result-figures">
+            <div><small>Your peak</small><b id="resultPeak">--</b></div>
+            <div><small>Target</small><b id="resultTarget">--</b></div>
+          </div>
+          <div class="strip" aria-hidden="true">
+            <div class="strip-window" id="stripWindow"></div>
+            <div class="strip-target" id="stripTarget"></div>
+            <div class="strip-marker" id="stripMarker"><span id="stripMarkerLabel"></span></div>
+          </div>
+          <div class="strip-labels" aria-hidden="true"><span>quieter</span><span>louder</span></div>
+          <p class="delta" id="resultDelta"></p>
+          <p class="level-change" id="resultLevel"></p>
+          <button type="button" class="btn btn-primary btn-wide btn-xl" id="nextBtn">Next →</button>
+          <ol class="scoreboard" id="resultScores"></ol>
+        </div>
+
+        <!-- Winner -->
+        <div class="screen center" data-screen="win" hidden>
+          <div class="trophy" aria-hidden="true">🏆</div>
+          <h1 class="big-name"><span id="winName">Player</span> wins!</h1>
+          <p class="muted" id="winMsg"></p>
+          <p class="help" id="winLast"></p>
+          <ol class="scoreboard" id="winScores"></ol>
+          <div class="row">
+            <button type="button" class="btn btn-primary" id="rematchBtn">🔁 Rematch</button>
+            <button type="button" class="btn btn-ghost" id="newPlayersBtn">New players</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========================== SETTINGS ========================== -->
+      <section class="view" id="view-settings" data-view="settings" aria-label="Settings" hidden>
+        <h1 class="view-title">Settings</h1>
+
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">Calibration</h2>
+            <span class="chip chip-strong" id="offsetValue">+105 dB</span>
+          </div>
+          <p class="help">Phone mics report dBFS (relative to the loudest sound they can record), not real decibels. This offset turns that into approximate dB&nbsp;SPL. Every phone is a little different, so it's worth calibrating yours.</p>
+          <button type="button" class="btn btn-primary btn-wide cal-voice" id="voiceCal">🗣️ Calibrate with my voice</button>
+          <p class="help">Hold the phone about an arm's length away, tap the button and talk normally for 3 seconds (count out loud or read something). That level is set to 60 dB, a normal conversation.</p>
+          <div class="slider-row">
+            <button type="button" class="btn-round" id="offsetMinus" aria-label="Lower offset by 1 dB">−</button>
+            <input type="range" id="offset" min="40" max="140" step="0.5" value="105" aria-label="Calibration offset">
+            <button type="button" class="btn-round" id="offsetPlus" aria-label="Raise offset by 1 dB">+</button>
+          </div>
+          <div class="cal-live">
+            <span>Reading now: <b id="calReading">--</b></span>
+            <button type="button" class="btn btn-small btn-ghost" id="calMic">🎤 Start mic</button>
+          </div>
+          <div class="cal-match">
+            <label for="refDb">A real meter shows</label>
+            <input id="refDb" type="number" inputmode="decimal" min="20" max="130" step="0.5" placeholder="60">
+            <span>dB</span>
+            <button type="button" class="btn btn-small btn-primary" id="refMatch">Match</button>
+          </div>
+          <button type="button" class="btn btn-small btn-ghost" id="offsetReset">Reset to +105</button>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">Game options</h2>
+          <div id="settingsOptions"></div>
+        </div>
+
+        <div class="card" id="installCard">
+          <h2 class="card-title">Add to Home Screen</h2>
+          <p class="muted" id="installStatus"></p>
+          <button type="button" class="btn btn-primary btn-wide" id="installBtn" hidden>📲 Install app</button>
+          <div class="install-steps" id="installSteps">
+            <div class="steps" data-platform="ios">
+              <h3>iPhone / iPad (Safari)</h3>
+              <ol>
+                <li>Open this page in <b>Safari</b>.</li>
+                <li>Tap the <b>Share</b> button <span class="kbd">⬆︎</span> (or the <b>⋯</b> menu, then Share).</li>
+                <li>Choose <b>Add to Home Screen</b>, then <b>Add</b>.</li>
+              </ol>
+            </div>
+            <div class="steps" data-platform="android">
+              <h3>Android (Chrome)</h3>
+              <ol>
+                <li>Tap the <b>⋮</b> menu in Chrome.</li>
+                <li>Choose <b>Add to Home screen</b> or <b>Install app</b>.</li>
+                <li>Confirm with <b>Install</b> / <b>Add</b>.</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <div class="card about">
+          <h2 class="card-title">About</h2>
+          <p>⚠️ <b>Loud Enough is an approximate meter, not a certified sound level meter.</b> Don't use it for hearing protection, legal or workplace measurements.</p>
+          <p class="help">Sound is analysed live on your phone. Nothing is recorded or uploaded. Works offline once loaded.</p>
+          <p class="help">Version <span id="appVersion"></span></p>
+        </div>
+      </section>
+    </main>
+
+    <nav class="tabbar" aria-label="Sections">
+      <button type="button" class="tab" data-tab="meter" aria-selected="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16a9 9 0 0 1 18 0"/><path d="M12 16l4.5-5"/><circle cx="12" cy="16" r="1.6"/></svg>
+        <span>Meter</span>
+      </button>
+      <button type="button" class="tab" data-tab="game" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="7" width="19" height="11" rx="5.5"/><path d="M7.5 10.5v4M5.5 12.5h4"/><circle cx="15.5" cy="11.5" r="1"/><circle cx="17.5" cy="13.8" r="1"/></svg>
+        <span>Game</span>
+      </button>
+      <button type="button" class="tab" data-tab="settings" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Game options: cloned into the game setup screen and into Settings -->
+  <template id="gameOptionsTpl">
+    <label class="toggle-row">
+      <span>
+        <span class="toggle-title">Team mode</span>
+        <span class="help">Any miss sends <b>everyone</b> back to level 1 instead of just that player.</span>
+      </span>
+      <span class="switch"><input type="checkbox" data-setting="teamMode" aria-label="Team mode"><span class="slider" aria-hidden="true"></span></span>
+    </label>
+    <div class="option-block" role="radiogroup" aria-label="Difficulty">
+      <span class="toggle-title">Difficulty</span>
+      <div class="segmented seg-3">
+        <label><input type="radio" data-setting="difficulty" value="easy"><span><i aria-hidden="true">😌</i>Easy<small>8 → 4 dB</small></span></label>
+        <label><input type="radio" data-setting="difficulty" value="normal"><span><i aria-hidden="true">🙂</i>Normal<small>5 → 3 dB</small></span></label>
+        <label><input type="radio" data-setting="difficulty" value="hard"><span><i aria-hidden="true">😈</i>Hard<small>3 → 1 dB</small></span></label>
+      </div>
+      <span class="help">How far under the target you're allowed to land. The window shrinks as you level up.</span>
+    </div>
+    <div class="option-block" role="radiogroup" aria-label="Target order">
+      <span class="toggle-title">Target order</span>
+      <div class="segmented seg-3">
+        <label><input type="radio" data-setting="targetOrder" value="random"><span><i aria-hidden="true">🎲</i>Random<small>50–85 dB</small></span></label>
+        <label><input type="radio" data-setting="targetOrder" value="descending"><span><i aria-hidden="true">📉</i>Loud → soft<small>85 → 50 dB</small></span></label>
+        <label><input type="radio" data-setting="targetOrder" value="ascending"><span><i aria-hidden="true">📈</i>Soft → loud<small>50 → 85 dB</small></span></label>
+      </div>
+      <span class="help" data-order-help></span>
+    </div>
+    <div class="option-block" role="radiogroup" aria-label="Words">
+      <span class="toggle-title">Words</span>
+      <div class="segmented seg-3">
+        <label><input type="radio" data-setting="wordSource" value="builtin"><span><i aria-hidden="true">📚</i>Built-in<small>100 words</small></span></label>
+        <label><input type="radio" data-setting="wordSource" value="custom"><span><i aria-hidden="true">✏️</i>My words<small data-word-count>0 words</small></span></label>
+        <label><input type="radio" data-setting="wordSource" value="both"><span><i aria-hidden="true">🔀</i>Both<small data-both-count>100 + 0</small></span></label>
+      </div>
+      <div class="words-editor" data-words-editor hidden>
+        <textarea data-setting="customWords" rows="5" maxlength="6000" autocapitalize="sentences" spellcheck="false" aria-label="Your words, one per line" placeholder="One per line, or separated by commas&#10;Pizza party&#10;Grandma&#10;Taco Tuesday"></textarea>
+        <span class="help" data-words-help></span>
+      </div>
+    </div>
+  </template>
+
+  <div class="modal" id="scoresModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="scoresTitle">
+      <h2 class="card-title" id="scoresTitle">Scoreboard</h2>
+      <ol class="scoreboard" id="scoresList"></ol>
+      <button type="button" class="btn btn-primary btn-wide" id="scoresClose">Close</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <canvas class="confetti" id="confetti" aria-hidden="true"></canvas>
+
+  <noscript><p class="noscript">Loud Enough needs JavaScript to measure sound.</p></noscript>
+  <script src="app.js"></script>
+</body>
+</html>
