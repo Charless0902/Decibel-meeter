@@ -47,7 +47,7 @@ function fakeMic() {
   // amplitude of a sine that reads `db` with the given calibration offset
   mic.set = (db, offset) => {
     const level = db === null || db === undefined ? mic.ambientDb : db;
-    mic.amp = level === null ? 0 : Math.SQRT2 * Math.pow(10, (level - (offset || 94)) / 20);
+    mic.amp = level === null ? 0 : Math.SQRT2 * Math.pow(10, (level - (offset || 105)) / 20);
     if (mic.gain) mic.gain.gain.setValueAtTime(mic.amp, mic.ctx.currentTime);
   };
   mic.set(null);
@@ -148,7 +148,7 @@ async function startGame(page, names, team) {
   while (parseInt(await text(page, '#playerCount'), 10) < count) await page.click('#pcPlus');
   const inputs = await page.$$('#nameList input');
   for (let i = 0; i < count; i++) await inputs[i].fill(names[i]);
-  if (team) await page.check('#teamModeSetup');
+  if (team) await page.check('#setupOptions [data-setting="teamMode"]');
   await page.click('#startGame');
   await page.waitForSelector(visible('pass'));
 }
@@ -212,8 +212,8 @@ test('service worker caches the app so it opens offline', { skip }, async () => 
 /* live meter                                                          */
 /* ------------------------------------------------------------------ */
 
-test('real capture path: raw constraints, and a known-level WAV reads ~71 dB', { skip }, async () => {
-  // 1 kHz sine at amplitude 0.1 = -23 dBFS -> 71 dB with the default +94 offset
+test('real capture path: raw constraints, and a known-level WAV reads ~82 dB', { skip }, async () => {
+  // 1 kHz sine at amplitude 0.1 = -23 dBFS -> 82 dB with the default +105 offset
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loud-enough-'));
   const wav = path.join(dir, 'tone.wav');
   const rate = 48000;
@@ -271,7 +271,7 @@ async function checkWavMeter(wavBrowser) {
   assert.equal(gum[0].settings.echoCancellation, false);
   assert.equal(gum[0].settings.noiseSuppression, false);
   assert.equal(gum[0].settings.autoGainControl, false);
-  near(await readMeter(page), 71, 1, 'meter reading');
+  near(await readMeter(page), 82, 1, 'meter reading');
   assert.deepEqual(errors, [], 'no errors even without the Wake Lock API');
 }
 
@@ -375,16 +375,16 @@ test('meter: a blocked microphone shows a helpful message', { skip }, async () =
 test('settings: calibration offset shifts readings, reference match works, all saved', { skip }, async () => {
   const { page, context, errors } = await openApp();
   await page.click('.tab[data-tab="settings"]');
-  assert.equal(await text(page, '#offsetValue'), '+94 dB');
+  assert.equal(await text(page, '#offsetValue'), '+105 dB');
   await page.click('#calMic');
   await setLevel(page, 60);
   await page.waitForTimeout(800);
-  near(parseFloat(await text(page, '#calReading')), 60, 0.3, 'reading at +94');
+  near(parseFloat(await text(page, '#calReading')), 60, 0.3, 'reading at +105');
 
   for (let i = 0; i < 6; i++) await page.click('#offsetPlus');
-  assert.equal(await text(page, '#offsetValue'), '+100 dB');
+  assert.equal(await text(page, '#offsetValue'), '+111 dB');
   await page.waitForTimeout(200);
-  near(parseFloat(await text(page, '#calReading')), 66, 0.3, 'reading at +100');
+  near(parseFloat(await text(page, '#calReading')), 66, 0.3, 'reading at +111');
 
   await page.fill('#offset', '90.5');
   assert.equal(await text(page, '#offsetValue'), '+90.5 dB');
@@ -392,22 +392,26 @@ test('settings: calibration offset shifts readings, reference match works, all s
   await page.fill('#refDb', '65');
   await page.click('#refMatch');
   await page.waitForTimeout(200);
-  assert.equal(await text(page, '#offsetValue'), '+99 dB');
+  assert.equal(await text(page, '#offsetValue'), '+110 dB');
   near(parseFloat(await text(page, '#calReading')), 65, 0.3, 'reading after match');
 
-  await page.check('#teamMode');
+  await page.check('#settingsOptions [data-setting="teamMode"]');
+  await page.click('#settingsOptions [data-setting="difficulty"][value="easy"]');
   await page.reload();
   await page.click('.tab[data-tab="settings"]');
-  assert.equal(await text(page, '#offsetValue'), '+99 dB');
-  assert.equal(await page.inputValue('#offset'), '99');
-  assert.equal(await page.isChecked('#teamMode'), true);
+  assert.equal(await text(page, '#offsetValue'), '+110 dB');
+  assert.equal(await page.inputValue('#offset'), '110');
+  assert.equal(await page.isChecked('#settingsOptions [data-setting="teamMode"]'), true);
+  assert.equal(await page.isChecked('#settingsOptions [data-setting="difficulty"][value="easy"]'), true);
   await page.click('.tab[data-tab="game"]');
-  assert.equal(await page.isChecked('#teamModeSetup'), true, 'setup toggle mirrors the setting');
+  assert.equal(await page.isChecked('#setupOptions [data-setting="teamMode"]'), true, 'setup toggle mirrors the setting');
+  assert.equal(await page.isChecked('#setupOptions [data-setting="difficulty"][value="easy"]'), true);
   assert.equal(await text(page, '#gameMode'), 'Team');
 
   await page.click('.tab[data-tab="settings"]');
+  assert.equal(await text(page, '#offsetReset'), 'Reset to +105');
   await page.click('#offsetReset');
-  assert.equal(await text(page, '#offsetValue'), '+94 dB');
+  assert.equal(await text(page, '#offsetValue'), '+105 dB');
   assert.deepEqual(errors, []);
   await context.close();
 });
@@ -433,7 +437,7 @@ test('game setup: 2–10 players, optional names', { skip }, async () => {
   await page.click('#startGame');
   await page.waitForSelector(visible('pass'));
   assert.equal(await text(page, '#passName'), 'Ann');
-  assert.equal(await text(page, '#passWindow'), '3');
+  assert.equal(await text(page, '#passWindow'), '5', 'Normal difficulty by default');
   await page.click('#scoresBtn');
   assert.deepEqual(await page.$$eval('#scoresList .score-name', (els) => els.map((e) => e.textContent)), ['Ann', 'Player 2', 'Cat']);
   await page.click('#scoresClose');
@@ -449,7 +453,7 @@ test('game: perfect levels up; too loud / too quiet / silence fail, reset and vi
   // Ann: perfect (middle of the window)
   let turn = await playTurn(page, (t, w) => t - w / 2);
   assert.ok(turn.target >= 50 && turn.target <= 85, 'target ' + turn.target);
-  assert.equal(turn.win, 3);
+  assert.equal(turn.win, 5);
   near(turn.live, turn.aimed, 0.3, 'live bar value');
   assert.equal(await text(page, '#resultVerdict'), 'Perfect!');
   near(parseFloat(await text(page, '#resultPeak')), turn.aimed, 0.3, 'peak');
@@ -500,11 +504,14 @@ test('game: team mode sends everyone back to level 1', { skip }, async () => {
   await context.close();
 });
 
-test('game: loudest → softest target order steps down per level and is saved', { skip }, async () => {
+test('game: loudest → softest and softest → loudest target orders, saved and mirrored', { skip }, async () => {
   const { page, context, errors } = await openApp();
   await page.click('.tab[data-tab="game"]');
-  assert.equal(await page.isChecked('input[name="targetOrderSetup"][value="random"]'), true, 'random by default');
-  await page.click('input[name="targetOrderSetup"][value="descending"]');
+  const setupOrder = (v) => `#setupOptions [data-setting="targetOrder"][value="${v}"]`;
+  const settingsOrder = (v) => `#settingsOptions [data-setting="targetOrder"][value="${v}"]`;
+  assert.equal(await page.isChecked(setupOrder('random')), true, 'random by default');
+  await page.click(setupOrder('descending'));
+  assert.match(await text(page, '#setupOptions [data-order-help]'), /85 dB, then 81/);
   await startGame(page, ['Ann', 'Bob']);
   assert.equal(await text(page, '#gameMode'), 'Solo · 📉');
   assert.equal(await page.isVisible('#passTarget'), true);
@@ -525,37 +532,55 @@ test('game: loudest → softest target order steps down per level and is saved',
 
   // the choice is saved and mirrored in Settings
   await page.click('.tab[data-tab="settings"]');
-  assert.equal(await page.isChecked('input[name="targetOrder"][value="descending"]'), true);
+  assert.equal(await page.isChecked(settingsOrder('descending')), true);
   await page.reload();
   await page.click('.tab[data-tab="game"]');
   await page.click('#continueBtn');
   await page.waitForSelector(visible('pass'));
   assert.equal(await text(page, '#passName'), 'Bob');
   assert.equal(await text(page, '#passTargetValue'), '85');
-  turn = await playTurn(page, (t, w) => t - w / 2); // Bob, level 1
+  turn = await playTurn(page, (t, w) => t - w / 2); // Bob, level 1 -> 2
   assert.equal(turn.target, 85);
   await page.click('#nextBtn');
   assert.equal(await text(page, '#passName'), 'Ann');
   assert.equal(await text(page, '#passTargetValue'), '85', 'after a miss Ann starts loud again');
 
-  // switching back to random hides the fixed target
+  // softest → loudest: Ann (level 1) starts at 50 dB, Bob (level 2) at 54 dB
   await page.click('.tab[data-tab="settings"]');
-  await page.click('input[name="targetOrder"][value="random"]');
+  await page.click(settingsOrder('ascending'));
+  assert.match(await text(page, '#settingsOptions [data-order-help]'), /50 dB, then 54/);
   await page.click('.tab[data-tab="game"]');
+  assert.equal(await text(page, '#gameMode'), 'Solo · 📈');
+  assert.equal(await text(page, '#passTargetIcon'), '📈');
+  assert.equal(await text(page, '#passTargetValue'), '50');
+  turn = await playTurn(page, (t, w) => t - w / 2);
+  assert.equal(turn.target, 50);
+  assert.equal(await text(page, '#resultVerdict'), 'Perfect!');
+  await page.click('#nextBtn');
+  assert.equal(await text(page, '#passTargetValue'), '54');
+  turn = await playTurn(page, (t, w) => t - w / 2);
+  assert.equal(turn.target, 54);
+
+  // back to random hides the fixed target
+  await page.click('.tab[data-tab="settings"]');
+  await page.click(settingsOrder('random'));
+  await page.click('.tab[data-tab="game"]');
+  await page.click('#nextBtn');
   assert.equal(await page.isVisible('#passTarget'), false);
   assert.equal(await text(page, '#gameMode'), 'Solo');
   assert.deepEqual(errors, []);
   await context.close();
 });
 
-test('game: resumes after reload, windows shrink, level 10 wins', { skip }, async () => {
+test('game: resumes after reload, Hard windows shrink to 2 and 1 dB, level 10 wins', { skip }, async () => {
   const { page, context, errors } = await openApp();
-  await page.evaluate(() =>
+  await page.evaluate(() => {
+    localStorage.setItem('loudEnough.settings.v1', JSON.stringify({ v: 2, offset: 105, difficulty: 'hard' }));
     localStorage.setItem(
       'loudEnough.game.v1',
       JSON.stringify({ v: 1, players: [{ name: 'Ann', level: 9 }, { name: 'Bob', level: 4 }], turn: 1, round: 7, winner: null, bag: [] })
-    )
-  );
+    );
+  });
   await page.reload();
   await page.click('.tab[data-tab="game"]');
   assert.equal(await page.isVisible('#resumeCard'), true);
@@ -595,7 +620,7 @@ test('game: a noisy room raises the target and the word is still detected', { sk
   });
   await startGame(page, ['Ann', 'Bob']);
   const turn = await playTurn(page, (t, w) => t - w / 2);
-  assert.ok(turn.target >= 62 + 6 + 3 + 1, 'target raised to ' + turn.target);
+  assert.ok(turn.target >= 62 + 6 + 5 + 1, 'target raised to ' + turn.target);
   assert.equal(await text(page, '#resultVerdict'), 'Perfect!');
   assert.deepEqual(errors, []);
   await context.close();
@@ -613,6 +638,85 @@ test('game: leaving the tab mid-turn cancels that turn without penalty', { skip 
   // the turn can be played normally afterwards
   await playTurn(page, (t, w) => t - w / 2);
   assert.equal(await text(page, '#resultVerdict'), 'Perfect!');
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('game: play with your own words', { skip }, async () => {
+  const { page, context, errors } = await openApp();
+  await page.click('.tab[data-tab="game"]');
+  assert.equal(await page.isVisible('#setupOptions [data-words-editor]'), false, 'editor hidden for built-in words');
+  await page.click('#setupOptions [data-setting="wordSource"][value="custom"]');
+  assert.equal(await page.isVisible('#setupOptions [data-words-editor]'), true);
+  assert.match(await text(page, '#setupOptions [data-words-help]'), /at least one word/);
+  await page.fill('#setupOptions [data-setting="customWords"]', 'Pizza party\nGrandma, Grandpa\ngrandma');
+  assert.equal(await text(page, '#setupOptions [data-word-count]'), '3 words');
+  assert.match(await text(page, '#setupOptions [data-words-help]'), /only your 3 words/);
+
+  // mirrored in Settings and saved
+  await page.click('.tab[data-tab="settings"]');
+  assert.equal(await page.inputValue('#settingsOptions [data-setting="customWords"]'), 'Pizza party\nGrandma, Grandpa\ngrandma');
+  await page.reload();
+  await page.click('.tab[data-tab="game"]');
+  assert.equal(await page.isChecked('#setupOptions [data-setting="wordSource"][value="custom"]'), true);
+
+  await startGame(page, ['Ann', 'Bob']);
+  const words = [];
+  for (let i = 0; i < 4; i++) {
+    const turn = await playTurn(page, (t, w) => t - w / 2);
+    words.push(turn.word);
+    await page.click('#nextBtn');
+  }
+  for (const w of words) assert.ok(['Pizza party', 'Grandma', 'Grandpa'].includes(w), w);
+  assert.equal(new Set(words.slice(0, 3)).size, 3, 'all three before any repeat: ' + words);
+  for (let i = 1; i < words.length; i++) assert.notEqual(words[i], words[i - 1]);
+
+  // "Both" mixes them with the built-in list
+  await page.click('.tab[data-tab="settings"]');
+  await page.click('#settingsOptions [data-setting="wordSource"][value="both"]');
+  assert.equal(await text(page, '#settingsOptions [data-both-count]'), '100 + 3');
+  assert.match(await text(page, '#settingsOptions [data-words-help]'), /mixed in with the 100 built-in/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('settings: calibrate with your voice sets normal talking to 60 dB', { skip }, async () => {
+  const { page, context, errors } = await openApp();
+  await page.click('.tab[data-tab="settings"]');
+  // steady background only: no talking heard, offset unchanged
+  await page.click('#voiceCal');
+  await page.waitForFunction(() => /Keep talking/.test(document.getElementById('voiceCal').textContent));
+  await page.waitForFunction(() => !document.getElementById('voiceCal').disabled, null, { timeout: 8000 });
+  assert.match(await text(page, '#toast'), /Couldn't hear clear talking/);
+  assert.equal(await text(page, '#offsetValue'), '+105 dB');
+
+  // "talking" that reads 48 dB with pauses: the offset moves up by 12 dB
+  await page.evaluate(() => {
+    let on = false;
+    window.__talk = setInterval(() => {
+      on = !on;
+      window.__mic.set(on ? 48 : null);
+    }, 300);
+  });
+  await page.click('#voiceCal');
+  await page.waitForFunction(() => !document.getElementById('voiceCal').disabled, null, { timeout: 8000 });
+  await page.evaluate(() => clearInterval(window.__talk));
+  assert.match(await text(page, '#toast'), /Normal talking now reads about 60 dB/);
+  const offset = parseFloat((await text(page, '#offsetValue')).replace('+', ''));
+  near(offset, 117, 1, 'offset after voice calibration');
+  assert.equal(await text(page, '#voiceCal'), '🗣️ Calibrate with my voice');
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('settings: an untouched +94 from version 1 moves to the new default', { skip }, async () => {
+  const { page, context, errors } = await openApp();
+  await page.evaluate(() => localStorage.setItem('loudEnough.settings.v1', JSON.stringify({ offset: 94, teamMode: true, targetOrder: 'descending' })));
+  await page.reload();
+  await page.click('.tab[data-tab="settings"]');
+  assert.equal(await text(page, '#offsetValue'), '+105 dB');
+  assert.equal(await page.isChecked('#settingsOptions [data-setting="teamMode"]'), true);
+  assert.equal(await page.isChecked('#settingsOptions [data-setting="targetOrder"][value="descending"]'), true);
   assert.deepEqual(errors, []);
   await context.close();
 });

@@ -21,9 +21,31 @@ test('RMS and dBFS: full-scale sine is -3 dBFS, square is 0, silence is the floo
   near(Core.dbToPower(Core.powerToDb(0.0123)), 0.0123, 1e-9);
 });
 
-test('calibration: a 0.1 amplitude sine with the default +94 offset reads ~71 dB', () => {
+test('calibration: default offset is +105; a 0.1 amplitude sine reads ~82 dB', () => {
+  assert.equal(Core.DEFAULT_OFFSET, 105);
   const dbfs = Core.powerToDb(Core.meanSquare(sine(0.1)));
-  near(dbfs + Core.DEFAULT_OFFSET, 71.0, 0.05);
+  near(dbfs, -23.0, 0.05);
+  near(dbfs + Core.DEFAULT_OFFSET, 82.0, 0.05);
+});
+
+test('speechLevel: energy average of the talking, ignoring pauses', () => {
+  // talking at -45 dBFS with pauses at -70 -> -45
+  const talk = [];
+  for (let i = 0; i < 60; i++) talk.push(i % 3 === 0 ? -70 : -45);
+  near(Core.speechLevel(talk), -45, 0.01);
+  // louder and softer syllables average by energy, like a real meter
+  const mixed = [];
+  for (let i = 0; i < 60; i++) mixed.push(i % 4 === 0 ? -70 : i % 2 ? -40 : -50);
+  const level = Core.speechLevel(mixed);
+  assert.ok(level > -45 && level < -40, 'energy average ' + level);
+  // no clear talking: steady noise, silence, too few readings
+  assert.equal(Core.speechLevel(new Array(60).fill(-60)), null);
+  assert.equal(Core.speechLevel(new Array(60).fill(Core.SILENCE_DB)), null);
+  assert.equal(Core.speechLevel([-40, -70, -40]), null);
+  // a single click in silence is not talking
+  const click = new Array(60).fill(-70);
+  click[30] = -30;
+  assert.equal(Core.speechLevel(click), null);
 });
 
 test('Smoother: starts at the first value, follows Fast (125 ms) time weighting', () => {
@@ -63,8 +85,13 @@ test('zones: green under 60, yellow 60–80, red over 80', () => {
   assert.equal(Core.zoneOf(80.1), 'red');
 });
 
-test('window shrinks with level: 3 dB, then 2, then 1', () => {
-  assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(Core.windowForLevel), [3, 3, 3, 2, 2, 2, 1, 1, 1]);
+test('window shrinks with level, sized by difficulty (Normal by default)', () => {
+  const levels = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+  assert.deepEqual(levels.map((l) => Core.windowForLevel(l, 'hard')), [3, 3, 3, 2, 2, 2, 1, 1, 1]);
+  assert.deepEqual(levels.map((l) => Core.windowForLevel(l, 'normal')), [5, 5, 5, 4, 4, 4, 3, 3, 3]);
+  assert.deepEqual(levels.map((l) => Core.windowForLevel(l, 'easy')), [8, 8, 8, 6, 6, 6, 4, 4, 4]);
+  assert.equal(Core.windowForLevel(5), 4, 'normal when unset');
+  assert.equal(Core.windowForLevel(5, 'bogus'), 4);
 });
 
 test('judge: success only within the window just below the target', () => {
@@ -101,25 +128,38 @@ test('targets: random 50–85, raised in noisy rooms so the window is detectable
   assert.equal(seen.size, 36, 'every target from 50 to 85 shows up');
 });
 
-test('loudest → softest: targets step down from 85 dB at level 1 to 50 dB at level 9', () => {
-  const targets = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(Core.descendingTarget);
-  assert.deepEqual(targets, [85, 81, 76, 72, 68, 63, 59, 54, 50]);
-  for (let i = 1; i < targets.length; i++) assert.ok(targets[i] < targets[i - 1], 'strictly softer each level');
-  assert.equal(Core.descendingTarget(0), 85);
-  assert.equal(Core.descendingTarget(10), 50);
+test('target ladders: loudest → softest and softest → loudest', () => {
+  const levels = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+  const down = levels.map((l) => Core.plannedTarget(l, 'descending'));
+  const up = levels.map((l) => Core.plannedTarget(l, 'ascending'));
+  assert.deepEqual(down, [85, 81, 76, 72, 68, 63, 59, 54, 50]);
+  assert.deepEqual(up, [50, 54, 59, 63, 68, 72, 76, 81, 85]);
+  assert.deepEqual(up, down.slice().reverse(), 'the same ladder, the other way up');
+  for (let i = 1; i < 9; i++) {
+    assert.ok(down[i] < down[i - 1], 'softer each level');
+    assert.ok(up[i] > up[i - 1], 'louder each level');
+  }
+  assert.equal(Core.plannedTarget(0, 'descending'), 85);
+  assert.equal(Core.plannedTarget(10, 'ascending'), 85);
+  assert.equal(Core.plannedTarget(3, 'random'), null);
 });
 
-test('targetFor: picks by target order, window by level, and respects room noise', () => {
-  assert.deepEqual(Core.targetFor(1, 'descending', 35), { target: 85, win: 3, raised: false });
-  assert.deepEqual(Core.targetFor(5, 'descending', 35), { target: 68, win: 2, raised: false });
-  assert.deepEqual(Core.targetFor(9, 'descending', 35), { target: 50, win: 1, raised: false });
-  // noisy room (60 dB): level 9 needs at least 60 + 6 + 1 + 1 = 68
-  assert.deepEqual(Core.targetFor(9, 'descending', 60), { target: 68, win: 1, raised: true });
-  assert.deepEqual(Core.targetFor(2, 'descending', 60), { target: 81, win: 3, raised: false });
-  assert.deepEqual(Core.targetFor(4, 'random', 35, () => 0), { target: 50, win: 2, raised: false });
-  assert.deepEqual(Core.targetFor(7, 'random', 60, () => 0), { target: 68, win: 1, raised: true });
+test('targetFor: picks by target order, window by level and difficulty, respects room noise', () => {
+  const hard = { difficulty: 'hard', floor: 35 };
+  assert.deepEqual(Core.targetFor(1, { ...hard, order: 'descending' }), { target: 85, win: 3, raised: false });
+  assert.deepEqual(Core.targetFor(5, { ...hard, order: 'descending' }), { target: 68, win: 2, raised: false });
+  assert.deepEqual(Core.targetFor(9, { ...hard, order: 'descending' }), { target: 50, win: 1, raised: false });
+  assert.deepEqual(Core.targetFor(1, { ...hard, order: 'ascending' }), { target: 50, win: 3, raised: false });
+  assert.deepEqual(Core.targetFor(9, { ...hard, order: 'ascending' }), { target: 85, win: 1, raised: false });
+  assert.deepEqual(Core.targetFor(1, { order: 'ascending', floor: 35 }), { target: 50, win: 5, raised: false }, 'normal');
+  // noisy room (60 dB): the lowest target needs 60 + 6 + window + 1
+  assert.deepEqual(Core.targetFor(9, { difficulty: 'hard', order: 'descending', floor: 60 }), { target: 68, win: 1, raised: true });
+  assert.deepEqual(Core.targetFor(1, { difficulty: 'normal', order: 'ascending', floor: 60 }), { target: 72, win: 5, raised: true });
+  assert.deepEqual(Core.targetFor(2, { difficulty: 'hard', order: 'descending', floor: 60 }), { target: 81, win: 3, raised: false });
+  assert.deepEqual(Core.targetFor(4, { order: 'random', floor: 35, rand: () => 0 }), { target: 50, win: 4, raised: false });
+  assert.deepEqual(Core.targetFor(7, { difficulty: 'hard', order: 'random', floor: 60, rand: () => 0 }), { target: 68, win: 1, raised: true });
   for (let i = 0; i < 500; i++) {
-    const t = Core.targetFor(3, 'random', 40).target;
+    const t = Core.targetFor(3, { order: 'random', difficulty: 'easy', floor: 40 }).target;
     assert.ok(t >= 50 && t <= 85);
   }
 });
@@ -245,28 +285,79 @@ test('word list: 100 unique, short, single words', () => {
   for (const w of Core.WORDS) assert.match(w, /^[A-Z][a-z]{2,11}$/, w);
 });
 
-test('drawWord: no repeats until all 100 words are used', () => {
+test('drawWord: no repeats until all words are used, never twice in a row', () => {
   const g = Core.newGame(2);
   const seen = new Set();
   for (let i = 0; i < 100; i++) seen.add(Core.drawWord(g));
   assert.equal(seen.size, 100);
   assert.ok(Core.WORDS.includes(Core.drawWord(g)), 'bag refills');
   assert.equal(g.bag.length, 99);
+
+  const mine = ['Pizza party', 'Grandma', 'Taco Tuesday'];
+  const h = Core.newGame(2);
+  let last = null;
+  const counts = {};
+  for (let i = 0; i < 300; i++) {
+    const w = Core.drawWord(h, mine);
+    assert.ok(mine.includes(w), w);
+    assert.notEqual(w, last, 'no immediate repeat');
+    counts[w] = (counts[w] || 0) + 1;
+    last = w;
+  }
+  assert.deepEqual(Object.values(counts), [100, 100, 100], 'each word equally often');
+
+  // switching lists mid-game drops words that are no longer in the list
+  const k = Core.newGame(2);
+  Core.drawWord(k);
+  assert.ok(mine.includes(Core.drawWord(k, mine)));
+});
+
+test('parseWords: one per line or comma separated, trimmed, de-duplicated', () => {
+  assert.deepEqual(Core.parseWords('Pizza party\n  Grandma ,taco   tuesday;\n\npizza PARTY\n'), ['Pizza party', 'Grandma', 'taco tuesday']);
+  assert.deepEqual(Core.parseWords(''), []);
+  assert.deepEqual(Core.parseWords(null), []);
+  assert.equal(Core.parseWords('x'.repeat(50))[0].length, Core.CUSTOM_WORDS.maxLength);
+  const many = Array.from({ length: 400 }, (_, i) => 'w' + i).join('\n');
+  assert.equal(Core.parseWords(many).length, Core.CUSTOM_WORDS.maxWords);
+});
+
+test('wordList: built-in, my words, or both (empty "my words" falls back)', () => {
+  assert.equal(Core.wordList({ wordSource: 'builtin', customWords: 'A, B' }).length, 100);
+  assert.deepEqual(Core.wordList({ wordSource: 'custom', customWords: 'Alpha, Bravo' }), ['Alpha', 'Bravo']);
+  assert.equal(Core.wordList({ wordSource: 'custom', customWords: ' , ' }).length, 100, 'fallback');
+  const both = Core.wordList({ wordSource: 'both', customWords: 'Alpha\nbanana' });
+  assert.equal(both.length, 101, 'banana is already built in');
+  assert.ok(both.includes('Alpha') && both.includes('Banana'));
+  assert.equal(Core.wordList(undefined).length, 100);
 });
 
 test('sanitizeSettings: defaults, clamping, bad types', () => {
-  const d = { offset: 94, teamMode: false, targetOrder: 'random' };
+  const d = { v: 2, offset: 105, teamMode: false, targetOrder: 'random', difficulty: 'normal', wordSource: 'builtin', customWords: '' };
   assert.deepEqual(Core.sanitizeSettings(null), d);
-  assert.deepEqual(Core.sanitizeSettings({ offset: 101.5, teamMode: true, targetOrder: 'descending' }), { offset: 101.5, teamMode: true, targetOrder: 'descending' });
-  assert.deepEqual(Core.sanitizeSettings({ offset: 999 }), { ...d, offset: 140 });
-  assert.deepEqual(Core.sanitizeSettings({ offset: -5 }), { ...d, offset: 40 });
-  assert.deepEqual(Core.sanitizeSettings({ offset: '100', teamMode: 'yes', targetOrder: 'sideways' }), d);
+  const custom = { v: 2, offset: 101.5, teamMode: true, targetOrder: 'ascending', difficulty: 'easy', wordSource: 'both', customWords: 'Hi' };
+  assert.deepEqual(Core.sanitizeSettings(custom), custom);
+  assert.deepEqual(Core.sanitizeSettings({ v: 2, offset: 999 }), { ...d, offset: 140 });
+  assert.deepEqual(Core.sanitizeSettings({ v: 2, offset: -5 }), { ...d, offset: 40 });
+  assert.deepEqual(Core.sanitizeSettings({ offset: '100', teamMode: 'yes', targetOrder: 'sideways', difficulty: 'toString', wordSource: 'x', customWords: 5 }), d);
   assert.deepEqual(Core.sanitizeSettings({ offset: NaN }), d);
+  assert.equal(Core.sanitizeSettings({ customWords: 'a'.repeat(9000) }).customWords.length, Core.CUSTOM_WORDS.maxText);
+});
+
+test('settings from version 1: the old +94 default moves to +105, custom offsets stay', () => {
+  assert.deepEqual(Core.sanitizeSettings({ offset: 94, teamMode: true, targetOrder: 'descending' }), {
+    v: 2, offset: 105, teamMode: true, targetOrder: 'descending', difficulty: 'normal', wordSource: 'builtin', customWords: '',
+  });
+  assert.equal(Core.sanitizeSettings({ offset: 99 }).offset, 99, 'a hand-picked offset is kept');
+  assert.equal(Core.sanitizeSettings({ v: 2, offset: 94 }).offset, 94, 'version 2 can choose 94 on purpose');
 });
 
 test('sanitizeGame: accepts a valid save, rejects anything broken', () => {
-  const good = { v: 1, players: [{ name: 'Ann', level: 4 }, { name: 'Bob', level: 1 }], turn: 1, round: 3, winner: null, bag: [1, 2, 500, 'x'] };
-  assert.deepEqual(Core.sanitizeGame(good), { v: 1, players: good.players, turn: 1, round: 3, winner: null, bag: [1, 2] });
+  const good = { v: 1, players: [{ name: 'Ann', level: 4 }, { name: 'Bob', level: 1 }], turn: 1, round: 3, winner: null, bag: ['Grandma', 'Pizza'], lastWord: 'Taco' };
+  assert.deepEqual(Core.sanitizeGame(good), { v: 1, players: good.players, turn: 1, round: 3, winner: null, bag: ['Grandma', 'Pizza'], lastWord: 'Taco' });
+  // version 1 saved the bag as indexes into the built-in list
+  const old = Core.sanitizeGame({ ...good, bag: [1, 2, 500, -1, 2.5, '', 'x'.repeat(99)], lastWord: undefined });
+  assert.deepEqual(old.bag, ['Pickle', 'Noodle']);
+  assert.equal(old.lastWord, null);
   assert.equal(Core.sanitizeGame(null), null);
   assert.equal(Core.sanitizeGame({ players: [{ name: 'A', level: 1 }] }), null);
   assert.equal(Core.sanitizeGame({ ...good, turn: 2 }), null);

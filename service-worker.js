@@ -4,7 +4,7 @@
  * from the cache instantly and refreshed in the background, so a new deploy
  * shows up on the next launch. Bump VERSION if you add or rename files.
  */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'loud-enough-' + VERSION;
 const ASSETS = [
   './index.html',

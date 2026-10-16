@@ -8,13 +8,18 @@
 (function (root) {
   'use strict';
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
 
   /* =====================================================================
    * Core: pure, testable logic
    * =================================================================== */
   const Core = (function () {
-    const DEFAULT_OFFSET = 94; // dBFS + offset = approximate dB SPL
+    // dBFS + offset = approximate dB SPL. Version 1 used +94, which read about
+    // 10 dB low on an iPhone (normal talking showed 40–54 instead of ~60).
+    const DEFAULT_OFFSET = 105;
+    const OLD_DEFAULT_OFFSET = 94;
+    const SETTINGS_VERSION = 2;
+    const TALK_DB = 60; // normal conversation, used by "calibrate with my voice"
     const OFFSET_MIN = 40;
     const OFFSET_MAX = 140;
     const METER_MIN = 20; // range of the gauge and the graph, in dB
@@ -23,7 +28,17 @@
     const SILENCE_DB = -200; // what digital silence reports, in dBFS
     const FRAME_MS = 50; // ~20 updates per second
 
-    const TARGET_ORDERS = ['random', 'descending'];
+    const TARGET_ORDERS = ['random', 'descending', 'ascending'];
+
+    // How far under the target a hit may land, for levels 1–3, 4–6 and 7–9.
+    const DIFFICULTIES = {
+      easy: [8, 6, 4],
+      normal: [5, 4, 3],
+      hard: [3, 2, 1],
+    };
+
+    const WORD_SOURCES = ['builtin', 'custom', 'both'];
+    const CUSTOM_WORDS = { maxWords: 300, maxLength: 24, maxText: 6000 };
 
     const GAME = {
       minPlayers: 2,
@@ -150,11 +165,30 @@
       return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
     }
 
-    // How far under the target a hit may land: 3 dB, then 2, then 1.
-    function windowForLevel(level) {
-      if (level <= 3) return 3;
-      if (level <= 6) return 2;
-      return 1;
+    // Level of normal talking in a few seconds of readings: the energy average
+    // of the frames clearly above the quietest ones (pauses between words).
+    // Returns null when there was no clear talking.
+    function speechLevel(levels) {
+      if (levels.length < 10) return null;
+      const sorted = levels.slice().sort((a, b) => a - b);
+      const quiet = sorted[Math.floor(sorted.length * 0.1)];
+      const loudest = sorted[sorted.length - 1];
+      if (loudest <= SILENCE_DB || loudest - quiet < 6) return null;
+      const speech = levels.filter((v) => v > quiet + 6);
+      if (speech.length < levels.length * 0.2) return null;
+      let sum = 0;
+      speech.forEach((v) => {
+        sum += dbToPower(v);
+      });
+      return powerToDb(sum / speech.length);
+    }
+
+    // How far under the target a hit may land; it shrinks as you level up.
+    function windowForLevel(level, difficulty) {
+      const w = DIFFICULTIES[difficulty] || DIFFICULTIES.normal;
+      if (level <= 3) return w[0];
+      if (level <= 6) return w[1];
+      return w[2];
     }
 
     // Success = peak between (target - window) and target, inclusive. The peak is
@@ -181,25 +215,29 @@
       return Math.min(range.hi, range.lo + Math.floor(r * (range.hi - range.lo + 1)));
     }
 
-    // "Loudest → softest" order: level 1 aims at 85 dB and every level is a step
-    // softer, down to 50 dB at level 9 (85, 81, 76, 72, 68, 63, 59, 54, 50).
-    function descendingTarget(level) {
+    // Fixed target orders. "Loudest → softest": level 1 aims at 85 dB and every
+    // level is a step softer, down to 50 dB at level 9 (85, 81, 76, 72, 68, 63,
+    // 59, 54, 50). "Softest → loudest" is the same ladder the other way up.
+    // Returns null for random targets.
+    function plannedTarget(level, order) {
+      if (order !== 'descending' && order !== 'ascending') return null;
       const last = GAME.winLevel - 1;
-      const frac = (clamp(level, 1, last) - 1) / (last - 1);
-      return Math.round(GAME.maxTarget - frac * (GAME.maxTarget - GAME.minTarget));
+      let frac = (clamp(level, 1, last) - 1) / (last - 1);
+      if (order === 'descending') frac = 1 - frac;
+      return Math.round(GAME.minTarget + frac * (GAME.maxTarget - GAME.minTarget));
     }
 
-    // The target for a turn, given the player's level, the chosen target order
-    // and the measured room noise.
-    function targetFor(level, order, floorDb, rand) {
-      const win = windowForLevel(level);
-      const range = targetRange(floorDb, win);
-      if (order === 'descending') {
-        const planned = descendingTarget(level);
+    // The target for a turn. opts: { order, difficulty, floor (room noise in dB), rand }
+    function targetFor(level, opts) {
+      const o = opts || {};
+      const win = windowForLevel(level, o.difficulty);
+      const range = targetRange(o.floor, win);
+      const planned = plannedTarget(level, o.order);
+      if (planned !== null) {
         const target = clamp(planned, range.lo, range.hi);
         return { target: target, win: win, raised: target > planned };
       }
-      return { target: pickTarget(floorDb, win, rand), win: win, raised: range.raised };
+      return { target: pickTarget(o.floor, win, o.rand), win: win, raised: range.raised };
     }
 
     // Finds one spoken word in a stream of ~20 Hz frames and records its peak.
@@ -292,12 +330,52 @@
       return a;
     }
 
-    // Words come from a shuffled bag, so none repeats until all 100 were used.
-    function drawWord(game, rand) {
-      if (!Array.isArray(game.bag) || game.bag.length === 0) {
-        game.bag = shuffle(WORDS.map((_, i) => i), rand);
+    // Your own words: one per line, or separated by commas. Trimmed, de-duplicated
+    // (ignoring case) and capped in length and number.
+    function parseWords(text) {
+      const seen = new Set();
+      const out = [];
+      String(text || '')
+        .split(/[\n,;]+/)
+        .forEach((part) => {
+          const word = part.replace(/\s+/g, ' ').trim().slice(0, CUSTOM_WORDS.maxLength).trim();
+          const key = word.toLowerCase();
+          if (!word || seen.has(key) || out.length >= CUSTOM_WORDS.maxWords) return;
+          seen.add(key);
+          out.push(word);
+        });
+      return out;
+    }
+
+    // The words a game draws from. "My words" with an empty list falls back to
+    // the built-in words, so there is always something to say.
+    function wordList(settings) {
+      const mine = parseWords(settings && settings.customWords);
+      const source = settings && settings.wordSource;
+      if (source === 'custom' && mine.length) return mine;
+      if (source === 'both' && mine.length) {
+        const builtIn = new Set(WORDS.map((w) => w.toLowerCase()));
+        return WORDS.concat(mine.filter((w) => !builtIn.has(w.toLowerCase())));
       }
-      return WORDS[game.bag.pop()];
+      return WORDS.slice();
+    }
+
+    // Words come from a shuffled bag, so none repeats until the whole list was
+    // used, and the same word never comes twice in a row.
+    function drawWord(game, words, rand) {
+      const list = words && words.length ? words : WORDS;
+      const allowed = new Set(list);
+      let bag = Array.isArray(game.bag) ? game.bag.filter((w) => allowed.has(w)) : [];
+      if (!bag.length) {
+        bag = shuffle(list, rand);
+        if (bag.length > 1 && bag[bag.length - 1] === game.lastWord) {
+          bag.unshift(bag.pop());
+        }
+      }
+      const word = bag.pop();
+      game.bag = bag;
+      game.lastWord = word;
+      return word;
     }
 
     // Updates levels after a turn and moves on to the next player.
@@ -328,12 +406,28 @@
     }
 
     function sanitizeSettings(raw) {
-      const s = { offset: DEFAULT_OFFSET, teamMode: false, targetOrder: 'random' };
+      const s = {
+        v: SETTINGS_VERSION,
+        offset: DEFAULT_OFFSET,
+        teamMode: false,
+        targetOrder: 'random',
+        difficulty: 'normal',
+        wordSource: 'builtin',
+        customWords: '',
+      };
       if (raw && typeof raw === 'object') {
+        // Settings saved by version 1 still hold its +94 default; unless it was
+        // changed by hand, move it to the new default.
+        const fromV1 = !(raw.v >= 2);
         const offset = Number(raw.offset);
-        if (typeof raw.offset === 'number' && isFinite(offset)) s.offset = clamp(offset, OFFSET_MIN, OFFSET_MAX);
+        if (typeof raw.offset === 'number' && isFinite(offset) && !(fromV1 && offset === OLD_DEFAULT_OFFSET)) {
+          s.offset = clamp(offset, OFFSET_MIN, OFFSET_MAX);
+        }
         if (typeof raw.teamMode === 'boolean') s.teamMode = raw.teamMode;
         if (TARGET_ORDERS.indexOf(raw.targetOrder) !== -1) s.targetOrder = raw.targetOrder;
+        if (Object.prototype.hasOwnProperty.call(DIFFICULTIES, raw.difficulty)) s.difficulty = raw.difficulty;
+        if (WORD_SOURCES.indexOf(raw.wordSource) !== -1) s.wordSource = raw.wordSource;
+        if (typeof raw.customWords === 'string') s.customWords = raw.customWords.slice(0, CUSTOM_WORDS.maxText);
       }
       return s;
     }
@@ -357,18 +451,23 @@
         winner = raw.winner;
       }
       const round = Number.isInteger(raw.round) && raw.round > 0 ? raw.round : 1;
-      const bag = Array.isArray(raw.bag)
-        ? raw.bag.filter((i) => Number.isInteger(i) && i >= 0 && i < WORDS.length)
-        : [];
-      return { v: 1, players: players, turn: raw.turn, round: round, winner: winner, bag: bag };
+      // The bag holds the words still to come (version 1 stored indexes into WORDS).
+      const bag = [];
+      (Array.isArray(raw.bag) ? raw.bag : []).forEach((w) => {
+        if (Number.isInteger(w) && w >= 0 && w < WORDS.length) bag.push(WORDS[w]);
+        else if (typeof w === 'string' && w && w.length <= CUSTOM_WORDS.maxLength) bag.push(w);
+      });
+      const lastWord = typeof raw.lastWord === 'string' ? raw.lastWord : null;
+      return { v: 1, players: players, turn: raw.turn, round: round, winner: winner, bag: bag, lastWord: lastWord };
     }
 
     return {
       DEFAULT_OFFSET, OFFSET_MIN, OFFSET_MAX, METER_MIN, METER_MAX, FAST_TAU, SILENCE_DB, FRAME_MS,
-      GAME, VAD, WORDS, TARGET_ORDERS,
-      clamp, round1, meanSquare, rms, powerToDb, rmsToDb, dbToPower, Smoother, Stats, zoneOf, median,
-      windowForLevel, judge, targetRange, pickTarget, descendingTarget, targetFor, WordDetector, cleanName, newGame, shuffle,
-      drawWord, applyOutcome, sanitizeSettings, sanitizeGame,
+      OLD_DEFAULT_OFFSET, SETTINGS_VERSION, TALK_DB,
+      GAME, VAD, WORDS, TARGET_ORDERS, DIFFICULTIES, WORD_SOURCES, CUSTOM_WORDS,
+      clamp, round1, meanSquare, rms, powerToDb, rmsToDb, dbToPower, Smoother, Stats, zoneOf, median, speechLevel,
+      windowForLevel, judge, targetRange, pickTarget, plannedTarget, targetFor, WordDetector, cleanName, newGame, shuffle,
+      parseWords, wordList, drawWord, applyOutcome, sanitizeSettings, sanitizeGame,
     };
   })();
 
@@ -1073,8 +1172,26 @@
     return (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(v % 1 ? 1 : 0) + ' dB';
   }
 
+  const ORDER_HELP = {
+    random: 'Any target from 50 to 85 dB.',
+    descending: 'Level 1 aims at 85 dB, then 81, 76, 72, 68, 63, 59, 54, down to 50 dB at level 9. A miss starts you loud again.',
+    ascending: 'Level 1 aims at 50 dB, then 54, 59, 63, 68, 72, 76, 81, up to 85 dB at level 9. A miss starts you soft again.',
+  };
+  const ORDER_ICON = { random: '', descending: '📉', ascending: '📈' };
+  const ORDER_NAME = { random: 'random targets', descending: 'loudest to softest', ascending: 'softest to loudest' };
+
+  function wordsHelp(count) {
+    const plural = count === 1 ? '' : 's';
+    if (!count) return 'Type at least one word or short phrase. Until then, the built-in words are used.';
+    if (settings.wordSource === 'custom') return 'The game uses only your ' + count + ' word' + plural + '.';
+    return 'Your ' + count + ' word' + plural + (count === 1 ? ' is' : ' are') + ' mixed in with the 100 built-in ones.';
+  }
+
   const SettingsView = {
+    calibrating: false,
+
     init() {
+      this.initOptions();
       const slider = $('offset');
       slider.min = Core.OFFSET_MIN;
       slider.max = Core.OFFSET_MAX;
@@ -1087,19 +1204,7 @@
         if (e.key === 'Enter') this.matchReference();
       });
       $('calMic').addEventListener('click', () => Mic.start().catch(showMicError));
-      ['teamMode', 'teamModeSetup'].forEach((id) => {
-        $(id).addEventListener('change', (e) => {
-          settings.teamMode = e.target.checked;
-          saveSettings();
-        });
-      });
-      document.querySelectorAll('input[data-setting="targetOrder"]').forEach((radio) => {
-        radio.addEventListener('change', () => {
-          if (!radio.checked) return;
-          settings.targetOrder = radio.value;
-          saveSettings();
-        });
-      });
+      $('voiceCal').addEventListener('click', () => this.voiceCalibrate());
       Mic.frames.on((f) => {
         if (activeTab === 'settings') $('calReading').textContent = fmt1(Math.max(0, spl(f.fastFs))) + ' dB';
       });
@@ -1112,10 +1217,93 @@
       this.render();
     },
 
+    // The game options exist twice (game setup screen and Settings), cloned from
+    // one template. Every [data-setting] control writes straight to `settings`.
+    initOptions() {
+      const tpl = $('gameOptionsTpl');
+      ['setupOptions', 'settingsOptions'].forEach((id) => {
+        const box = $(id);
+        box.appendChild(tpl.content.cloneNode(true));
+        box.querySelectorAll('input[type="radio"]').forEach((radio) => {
+          radio.name = radio.dataset.setting + '-' + id;
+        });
+      });
+      document.querySelectorAll('[data-setting]').forEach((el) => {
+        const key = el.dataset.setting;
+        const choice = el.type === 'radio' || el.type === 'checkbox';
+        el.addEventListener(choice ? 'change' : 'input', () => {
+          if (el.type === 'radio') {
+            if (!el.checked) return;
+            settings[key] = el.value;
+          } else if (el.type === 'checkbox') {
+            settings[key] = el.checked;
+          } else {
+            settings[key] = el.value.slice(0, Core.CUSTOM_WORDS.maxText);
+          }
+          saveSettings();
+        });
+      });
+    },
+
     setOffset(v) {
       if (!isFinite(v)) return;
       settings.offset = Core.clamp(Math.round(v * 2) / 2, Core.OFFSET_MIN, Core.OFFSET_MAX);
       saveSettings();
+    },
+
+    // Listens to 3 seconds of normal talking and sets the offset so it reads as
+    // a normal conversation (60 dB).
+    voiceCalibrate() {
+      if (this.calibrating) return;
+      const btn = $('voiceCal');
+      const label = btn.textContent;
+      const finish = () => {
+        this.calibrating = false;
+        btn.disabled = false;
+        btn.textContent = label;
+      };
+      const run = () => {
+        this.calibrating = true;
+        btn.disabled = true;
+        btn.textContent = '🗣️ Keep talking… 3';
+        const levels = [];
+        let t0 = null;
+        const total = 3000;
+        let offState = noop;
+        const offFrames = Mic.frames.on((f) => {
+          if (!f.warm) return;
+          if (t0 === null) t0 = f.t;
+          const elapsed = f.t - t0;
+          levels.push(f.rawFs);
+          btn.textContent = '🗣️ Keep talking… ' + Math.max(1, Math.ceil((total - elapsed) / 1000));
+          if (elapsed < total) return;
+          offFrames();
+          offState();
+          finish();
+          const level = Core.speechLevel(levels);
+          if (level === null) {
+            toast("Couldn't hear clear talking. Try again somewhere quiet, talking normally.", 5000);
+            return;
+          }
+          this.setOffset(Core.TALK_DB - level);
+          toast('Done! Normal talking now reads about 60 dB (offset ' + fmtOffset(settings.offset) + ').', 5000);
+        });
+        offState = Mic.changes.on((s) => {
+          if (s === 'on') return;
+          offFrames();
+          offState();
+          finish();
+        });
+      };
+      if (Mic.state === 'on') {
+        run();
+        return;
+      }
+      btn.disabled = true;
+      Mic.start().then(run, (e) => {
+        btn.disabled = false;
+        showMicError(e);
+      });
     },
 
     // Sets the offset so the current reading (last second, energy-averaged)
@@ -1147,16 +1335,27 @@
     render() {
       $('offset').value = settings.offset;
       $('offsetValue').textContent = fmtOffset(settings.offset);
-      $('teamMode').checked = settings.teamMode;
-      $('teamModeSetup').checked = settings.teamMode;
-      document.querySelectorAll('input[data-setting="targetOrder"]').forEach((radio) => {
-        radio.checked = radio.value === settings.targetOrder;
+      $('offsetReset').textContent = 'Reset to ' + fmtOffset(Core.DEFAULT_OFFSET).replace(' dB', '');
+      document.querySelectorAll('[data-setting]').forEach((el) => {
+        const value = settings[el.dataset.setting];
+        if (el.type === 'radio') el.checked = el.value === value;
+        else if (el.type === 'checkbox') el.checked = !!value;
+        else if (document.activeElement !== el && el.value !== value) el.value = value;
       });
-      const descending = settings.targetOrder === 'descending';
-      $('gameMode').textContent = (settings.teamMode ? 'Team' : 'Solo') + (descending ? ' · 📉' : '');
-      $('gameMode').title = (settings.teamMode ? 'Team mode' : 'Solo mode') + (descending ? ', targets go from loudest to softest' : ', random targets');
+      const mine = Core.parseWords(settings.customWords);
+      const fill = (sel, text) => document.querySelectorAll(sel).forEach((el) => (el.textContent = text));
+      fill('[data-order-help]', ORDER_HELP[settings.targetOrder]);
+      fill('[data-word-count]', mine.length + (mine.length === 1 ? ' word' : ' words'));
+      fill('[data-both-count]', '100 + ' + mine.length);
+      fill('[data-words-help]', wordsHelp(mine.length));
+      document.querySelectorAll('[data-words-editor]').forEach((el) => {
+        el.hidden = settings.wordSource === 'builtin';
+      });
+      const icon = ORDER_ICON[settings.targetOrder];
+      $('gameMode').textContent = (settings.teamMode ? 'Team' : 'Solo') + (icon ? ' · ' + icon : '');
+      $('gameMode').title = (settings.teamMode ? 'Team mode' : 'Solo mode') + ', ' + ORDER_NAME[settings.targetOrder];
       $('gameMode').classList.toggle('team', settings.teamMode);
-      if (Game.phase === 'pass') Game.showPass(); // keep the shown target in sync
+      if (Game.phase === 'pass') Game.renderPass(); // keep the window and target in sync
     },
 
     onShow() {
@@ -1362,17 +1561,23 @@
         this.showWin();
         return;
       }
-      const p = this.player();
-      $('passName').textContent = p.name;
-      $('passLevel').textContent = p.level;
-      $('passWindow').textContent = Core.windowForLevel(p.level);
-      $('passTarget').hidden = settings.targetOrder !== 'descending';
-      $('passTargetValue').textContent = Core.descendingTarget(p.level);
-      renderPips($('passPips'), p.level);
+      this.renderPass();
       $('gameError').hidden = true;
       $('readyBtn').disabled = false;
       this.turn = null;
       this.show('pass');
+    },
+
+    renderPass() {
+      const p = this.player();
+      const planned = Core.plannedTarget(p.level, settings.targetOrder);
+      $('passName').textContent = p.name;
+      $('passLevel').textContent = p.level;
+      $('passWindow').textContent = Core.windowForLevel(p.level, settings.difficulty);
+      $('passTarget').hidden = planned === null;
+      $('passTargetIcon').textContent = ORDER_ICON[settings.targetOrder];
+      $('passTargetValue').textContent = planned;
+      renderPips($('passPips'), p.level);
     },
 
     ready() {
@@ -1403,7 +1608,7 @@
     // One second of silence = the noise floor for this turn.
     measureFloor() {
       const p = this.player();
-      this.turn = { win: Core.windowForLevel(p.level), floorFs: null, word: null, target: null };
+      this.turn = { win: Core.windowForLevel(p.level, settings.difficulty), floorFs: null, word: null, target: null };
       this.show('quiet');
       const bar = $('quietBar');
       bar.classList.remove('run');
@@ -1428,9 +1633,10 @@
       const p = this.player();
       t.floorFs = floorFs;
       const floorSpl = spl(floorFs);
-      const pick = Core.targetFor(p.level, settings.targetOrder, floorSpl);
+      const pick = Core.targetFor(p.level, { order: settings.targetOrder, difficulty: settings.difficulty, floor: floorSpl });
+      t.win = pick.win;
       t.target = pick.target;
-      t.word = Core.drawWord(this.data);
+      t.word = Core.drawWord(this.data, Core.wordList(settings));
       this.save(); // remembers which words were used
       $('revealName').textContent = p.name;
       $('revealLevel').textContent = p.level;

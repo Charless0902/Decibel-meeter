@@ -51,23 +51,36 @@ The first time you start the mic, the phone asks for microphone permission. On i
 - The screen stays awake while the mic is on (where the phone supports it).
 
 ### Calibration (Settings)
-Phones measure **dBFS** (relative to the loudest sound the mic can record), not real decibels. Loud Enough adds an offset (**default +94**) to show approximate **dB SPL**.
-- Drag the slider or use **−/+**.
-- If you have a real sound level meter (or a friend's trusted app), type its reading and tap **Match**.
-- No meter? Talk normally about 1 m from the phone and set it so it reads about 60 dB.
+Phones measure **dBFS** (relative to the loudest sound the mic can record), not real decibels. Loud Enough adds an offset (**default +105**) to show approximate **dB SPL**. (Version 1 used +94, which read about 10 dB low on an iPhone; if you never changed it, it moves to +105 automatically.)
+- **🗣️ Calibrate with my voice:** hold the phone at arm's length, tap it and talk normally for 3 seconds. That level becomes 60 dB, a normal conversation.
+- Have a real sound level meter? Type its reading and tap **Match**.
+- Or drag the slider / use **−/+**.
 
 ### The game
 1. Choose 2–10 players (names optional) and tap **Start game**.
 2. Pass the phone. The player taps **I'm ready** and everyone stays quiet for **1 second** while the room noise is measured.
 3. A word and a target appear (e.g. *say PICKLE at 72 dB*). Tap **GO!** and say it.
 4. The app detects when you start and stop talking and records the **peak** of the word.
-5. **Perfect!** if the peak is within the window just **below** the target (target − 3 dB up to the target). Over the target is **Too loud!**, below the window is **Too quiet!**.
+5. **Perfect!** if the peak is within the window just **below** the target (e.g. on Normal, level 1: target − 5 dB up to the target). Over the target is **Too loud!**, below the window is **Too quiet!**.
 6. A hit moves you up a level. A miss sends you back to level 1 (and the phone vibrates, on phones that support it).
-7. The window shrinks: **3 dB** (levels 1–3), **2 dB** (4–6), **1 dB** (7–9). First to **level 10** wins!
+7. The window shrinks as you climb. First to **level 10** wins!
 
-Options (Settings, or on the game setup screen):
+Options (on the game setup screen, and the same ones in Settings):
+- **Difficulty** (the hit window for levels 1–3 / 4–6 / 7–9):
+
+  | | Levels 1–3 | 4–6 | 7–9 |
+  | --- | --- | --- | --- |
+  | 😌 Easy | 8 dB | 6 dB | 4 dB |
+  | 🙂 **Normal** (default) | 5 dB | 4 dB | 3 dB |
+  | 😈 Hard | 3 dB | 2 dB | 1 dB |
+
+- **Target order:**
+  - **🎲 Random:** any target from 50 to 85 dB.
+  - **📉 Loud → soft:** level 1 aims at 85 dB, then 81, 76, 72, 68, 63, 59, 54, down to 50 dB at level 9.
+  - **📈 Soft → loud:** the same ladder upwards: 50 dB at level 1 up to 85 dB at level 9.
+  - On the ladders, a miss puts you back at the start (85 or 50 dB).
+- **Words:** **📚 Built-in** (100 words), **✏️ My words** (type your own, one per line or separated by commas: names, inside jokes, short phrases) or **🔀 Both**. Words never repeat until the whole list has been used.
 - **Team mode:** any miss sends *everyone* back to level 1.
-- **Target order:** **🎲 Random** (any target from 50 to 85 dB) or **📉 Loudest → softest**: level 1 aims at 85 dB and every level is softer (85, 81, 76, 72, 68, 63, 59, 54, 50 dB at level 9). A miss starts you loud again.
 
 In a noisy room, targets too quiet to tell apart from the background are raised automatically (the screen says so). A game in progress is saved, so you can continue after closing the app.
 
@@ -104,7 +117,7 @@ npm test             # unit tests + end-to-end tests in headless Chromium
 
 `localhost` counts as secure, so the mic works there on a computer. For a phone you need the HTTPS GitHub Pages link.
 
-The end-to-end tests drive the real app in headless Chromium with a simulated microphone (a tone at known volumes). They cover the meter's accuracy, zones, stats, graph and wake lock; calibration and saved settings; offline loading under the GitHub Pages sub-path; and full games: perfect / too loud / too quiet / silence, team mode, loudest → softest, shrinking windows, resuming, winning and noisy rooms. One test plays a WAV of known level through Chromium's fake microphone device to check the raw-audio constraints end to end.
+The end-to-end tests drive the real app in headless Chromium with a simulated microphone (a tone at known volumes). They cover the meter's accuracy, zones, stats, graph and wake lock; calibration (slider, Match, voice calibration, moving old settings to the new default) and saved settings; offline loading under the GitHub Pages sub-path; and full games: perfect / too loud / too quiet / silence, team mode, both target ladders, difficulty windows, your own words, resuming, winning and noisy rooms. One test plays a WAV of known level through Chromium's fake microphone device to check the raw-audio constraints end to end.
 
 ## Notes
 
